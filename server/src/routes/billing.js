@@ -30,7 +30,7 @@ router.get(
 router.get(
   '/billing/summary',
   asyncHandler(async (_req, res) => {
-    const [totalsRes, daysRes, mixRes] = await Promise.all([
+    const [totalsRes, failedRes, daysRes, mixRes] = await Promise.all([
       pool.query(
         `SELECT
            COALESCE(SUM(amount) FILTER (
@@ -40,10 +40,16 @@ router.get(
              WHERE status = 'PAID' AND COALESCE(paid_at, created_at)::DATE = CURRENT_DATE
            )::INT AS "paymentsToday",
            COALESCE(SUM(amount) FILTER (WHERE status = 'PENDING'), 0)::FLOAT AS pending,
-           COUNT(*) FILTER (WHERE status = 'PENDING')::INT AS "pendingCount",
-           COALESCE(SUM(amount) FILTER (WHERE status = 'FAILED'), 0)::FLOAT AS failed,
-           COUNT(*) FILTER (WHERE status = 'FAILED')::INT AS "failedCount"
+           COUNT(*) FILTER (WHERE status = 'PENDING')::INT AS "pendingCount"
          FROM payment`
+      ),
+      pool.query(
+        `SELECT
+           COALESCE(SUM(COALESCE(p.amount, calc_fee(pa.session_id))), 0)::FLOAT AS failed,
+           COUNT(pa.attempt_id)::INT AS "failedCount"
+         FROM payment_attempt pa
+         LEFT JOIN payment p ON p.session_id = pa.session_id
+         WHERE pa.outcome = 'FAILED'`
       ),
       pool.query(
         `SELECT
@@ -70,6 +76,7 @@ router.get(
     ]);
 
     const t = totalsRes.rows[0];
+    const f = failedRes.rows[0];
     const m = mixRes.rows[0];
 
     let upiPct = 0;
@@ -86,8 +93,8 @@ router.get(
       paymentsToday: t.paymentsToday,
       pending: Number(t.pending),
       pendingCount: t.pendingCount,
-      failed: Number(t.failed),
-      failedCount: t.failedCount,
+      failed: Number(f.failed),
+      failedCount: f.failedCount,
       revenueByDay: daysRes.rows.map((r) => ({
         day: r.day,
         amount: Number(r.amount)
@@ -109,27 +116,67 @@ router.get(
       rawStatus === 'All' || !rawStatus ? null : rawStatus.toUpperCase();
 
     const { rows } = await pool.query(
-      `SELECT
-         receipt AS id,
-         plate_no AS plate,
-         CASE
-           WHEN status = 'PENDING' OR method IS NULL THEN 'Not chosen'
-           WHEN method = 'UPI' THEN 'UPI'
-           WHEN method = 'CARD' THEN 'Card'
-           WHEN method = 'CASH' THEN 'Cash'
-           ELSE method
-         END AS method,
-         amount,
-         TO_CHAR(time, 'HH24:MI') AS time,
-         CASE status
-           WHEN 'PAID' THEN 'Paid'
-           WHEN 'PENDING' THEN 'Pending'
-           WHEN 'FAILED' THEN 'Failed'
-           ELSE status
-         END AS status
-       FROM v_payment_list
-       WHERE ($1::TEXT IS NULL OR status = $1)
-       ORDER BY time DESC, payment_id DESC
+      `SELECT id, plate, method, amount, time, status, "paidBy"
+       FROM (
+         SELECT
+           v.receipt AS id,
+           v.plate_no AS plate,
+           CASE
+             WHEN v.status = 'PENDING' OR v.method IS NULL THEN 'Not chosen'
+             WHEN v.method = 'UPI' THEN 'UPI'
+             WHEN v.method = 'CARD' THEN 'Card'
+             WHEN v.method = 'CASH' THEN 'Cash'
+             ELSE v.method
+           END AS method,
+           v.amount,
+           TO_CHAR(v.time, 'HH24:MI') AS time,
+           CASE v.status
+             WHEN 'PAID' THEN 'Paid'
+             WHEN 'PENDING' THEN 'Pending'
+           END AS status,
+           CASE
+             WHEN v.status = 'PENDING' THEN '—'
+             WHEN v.paid_by_role = 'PARKER' THEN 'Parker'
+             ELSE COALESCE(v.paid_by_name, 'Staff')
+           END AS "paidBy",
+           v.status AS raw_status,
+           v.time AS sort_ts,
+           v.payment_id AS sort_id
+         FROM v_payment_list v
+         WHERE v.status IN ('PAID', 'PENDING')
+
+         UNION ALL
+
+         SELECT
+           CASE
+             WHEN p.payment_id IS NOT NULL AND p.status = 'FAILED' THEN 'P-' || p.payment_id
+             ELSE 'P-A' || pa.attempt_id
+           END AS id,
+           ps.plate_no AS plate,
+           CASE pa.method
+             WHEN 'UPI' THEN 'UPI'
+             WHEN 'CARD' THEN 'Card'
+             WHEN 'CASH' THEN 'Cash'
+             ELSE pa.method
+           END AS method,
+           COALESCE(p.amount, calc_fee(pa.session_id)) AS amount,
+           TO_CHAR(pa.created_at, 'HH24:MI') AS time,
+           'Failed' AS status,
+           CASE
+             WHEN u.role = 'PARKER' THEN 'Parker'
+             ELSE COALESCE(u.full_name, 'Parker')
+           END AS "paidBy",
+           'FAILED' AS raw_status,
+           pa.created_at AS sort_ts,
+           pa.attempt_id AS sort_id
+         FROM payment_attempt pa
+         JOIN parking_session ps ON ps.session_id = pa.session_id
+         LEFT JOIN payment p     ON p.session_id = pa.session_id
+         LEFT JOIN app_user u    ON u.user_id = pa.made_by
+         WHERE pa.outcome = 'FAILED'
+       ) combined
+       WHERE ($1::TEXT IS NULL OR raw_status = $1)
+       ORDER BY sort_ts DESC, sort_id DESC
        LIMIT 50`,
       [dbStatus]
     );
@@ -141,7 +188,8 @@ router.get(
         method: r.method,
         amount: Number(r.amount),
         time: r.time,
-        status: r.status
+        status: r.status,
+        paidBy: r.paidBy
       }))
     );
   })

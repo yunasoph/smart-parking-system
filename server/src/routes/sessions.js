@@ -239,15 +239,26 @@ router.post(
       }
 
       const closed = updSession.rows[0];
+      const userId = req.user ? req.user.id : null;
+      const txnRef =
+        'SIM-' + Math.floor(100000 + Math.random() * 900000).toString();
+
+      await client.query(
+        `INSERT INTO payment_attempt (session_id, method, outcome, made_by)
+         VALUES ($1, $2, 'SUCCESS', $3)`,
+        [sessionId, rawMethod, userId]
+      );
 
       const updPay = await client.query(
         `UPDATE payment
             SET status = 'PAID',
                 method = $2,
-                paid_at = now()
+                paid_at = now(),
+                paid_by = $3,
+                txn_ref = $4
           WHERE session_id = $1
-          RETURNING amount, method`,
-        [sessionId, rawMethod]
+          RETURNING amount, method, txn_ref`,
+        [sessionId, rawMethod, userId, txnRef]
       );
 
       const slotRes = await client.query(
