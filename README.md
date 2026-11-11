@@ -15,13 +15,22 @@ You can either run the files in pgAdmin 4's Query Tool in order:
 2. `db/02_functions.sql`
 3. `db/03_triggers.sql`
 4. `db/04_views.sql`
-5. `db/05_seed.sql`
-6. `db/06_verify.sql`
+5. `db/07_auth.sql`
+6. `db/05_seed.sql`
+7. `db/06_verify.sql`
 
 Or run `db/run_all.sql` from the repository root using `psql`:
 ```powershell
 psql -U postgres -d parking_db -f db/run_all.sql
 ```
+
+### Demo logins (for development only)
+
+| Role | Email | Password | Notes |
+| --- | --- | --- | --- |
+| Admin | `admin@parksmart.test` | `Admin@1234` | Full staff access + `/users` staff management |
+| Staff | `staff@parksmart.test` | `Staff@1234` | Gate desk, dashboard, slots, vehicles, billing |
+| Parker | `parker@parksmart.test` | `Parker@1234` | Linked to owner **Isha Kapoor** (`HR 06 CD 3380`, currently parked in `G-12`) |
 
 ### 3. Configure the backend environment
 Copy `server/.env.example` to `server/.env` and set your PostgreSQL password:

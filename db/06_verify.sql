@@ -198,3 +198,48 @@ BEGIN
   END IF;
 END;
 $$;
+
+-- Check 7: a PARKER row without owner_id is rejected
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO app_user (email, password_hash, full_name, role, owner_id)
+    VALUES ('noowner@parksmart.test', 'hash', 'No Owner Parker', 'PARKER', NULL);
+
+    RAISE NOTICE 'FAIL 7: a PARKER row without owner_id was accepted';
+  EXCEPTION
+    WHEN check_violation THEN
+      RAISE NOTICE 'PASS 7: a PARKER row without owner_id is rejected (check_violation)';
+  END;
+END;
+$$;
+
+-- Check 8: a bad role in app_user is rejected
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO app_user (email, password_hash, full_name, role, owner_id)
+    VALUES ('badrole@parksmart.test', 'hash', 'Bad Role User', 'MANAGER', NULL);
+
+    RAISE NOTICE 'FAIL 8: a bad role in app_user was accepted';
+  EXCEPTION
+    WHEN check_violation THEN
+      RAISE NOTICE 'PASS 8: a bad role in app_user is rejected (check_violation)';
+  END;
+END;
+$$;
+
+-- Check 9: a duplicate email in app_user is rejected
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO app_user (email, password_hash, full_name, role, owner_id)
+    VALUES ('admin@parksmart.test', 'hash', 'Duplicate Admin', 'ADMIN', NULL);
+
+    RAISE NOTICE 'FAIL 9: a duplicate email in app_user was accepted';
+  EXCEPTION
+    WHEN unique_violation THEN
+      RAISE NOTICE 'PASS 9: a duplicate email in app_user is rejected (unique_violation)';
+  END;
+END;
+$$;

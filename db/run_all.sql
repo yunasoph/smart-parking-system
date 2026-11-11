@@ -5,5 +5,6 @@
 \i db/02_functions.sql
 \i db/03_triggers.sql
 \i db/04_views.sql
+\i db/07_auth.sql
 \i db/05_seed.sql
 \i db/06_verify.sql

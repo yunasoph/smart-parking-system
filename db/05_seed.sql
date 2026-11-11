@@ -1,6 +1,8 @@
 -- 05_seed.sql: Idempotent seed data for ParkSmart
 
 TRUNCATE TABLE
+  payment_attempt,
+  app_user,
   reservation,
   payment,
   parking_session,
@@ -62,6 +64,12 @@ INSERT INTO owner (full_name, phone, email) VALUES
   ('Reyansh Khanna', '9810000011', 'reyansh.khanna@example.com'),
   ('Tara Chopra',    '9810000012', 'tara.chopra@example.com'),
   ('Visitor',        '9999999999', NULL);
+
+-- Demo accounts (hashes generated via db/make_hashes.js)
+INSERT INTO app_user (email, password_hash, full_name, role, owner_id, active) VALUES
+  ('admin@parksmart.test',  '$2a$10$RVkLLAnXYMjqdz1aXQ9mNOenF6YM0YeG2i.bB.ZBoSghjt5SM.9OO', 'Vikram Sen',  'ADMIN',  NULL, TRUE),
+  ('staff@parksmart.test',  '$2a$10$KvafDBB1UT8aqgZWdCIwM.KF6.NbWtaWUiJvNL2F8aSK/k5rpL.VO', 'Riya Nair',   'STAFF',  NULL, TRUE),
+  ('parker@parksmart.test', '$2a$10$LlQyqxJ/Qn8AMDL878gSPeN/TT6vSeRViUQL6e7UOIMnJ9LrRai7S', 'Isha Kapoor', 'PARKER', 2,    TRUE);
 
 -- 4. The 12 vehicles from prototypes/vehicles.html
 INSERT INTO vehicle (plate_no, type_id, owner_id, plan, registered_at) VALUES
@@ -147,8 +155,13 @@ BEGIN
       UPDATE payment
          SET status  = 'PAID',
              method  = v_method,
-             paid_at = v_exit
+             paid_at = v_exit,
+             paid_by = 2,
+             txn_ref = 'SIM-' || LPAD(v_session_id::TEXT, 6, '0')
        WHERE session_id = v_session_id;
+
+      INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at)
+      VALUES (v_session_id, v_method, 'SUCCESS', 2, v_exit);
     END LOOP;
   END LOOP;
 END;
@@ -206,8 +219,13 @@ BEGIN
       UPDATE payment
          SET status  = 'PAID',
              method  = 'UPI',
-             paid_at = v_exit
+             paid_at = v_exit,
+             paid_by = CASE WHEN r.plate = 'HR 06 CD 3380' THEN 3 ELSE 2 END,
+             txn_ref = 'SIM-' || LPAD(v_sid::TEXT, 6, '0')
        WHERE session_id = v_sid;
+
+      INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at)
+      VALUES (v_sid, 'UPI', 'SUCCESS', CASE WHEN r.plate = 'HR 06 CD 3380' THEN 3 ELSE 2 END, v_exit);
     END LOOP;
   END LOOP;
 END;
@@ -246,8 +264,13 @@ BEGIN
     UPDATE payment
        SET status  = 'PAID',
            method  = v_method,
-           paid_at = v_exit
+           paid_at = v_exit,
+           paid_by = 2,
+           txn_ref = 'SIM-' || LPAD(v_sid::TEXT, 6, '0')
      WHERE session_id = v_sid;
+
+    INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at)
+    VALUES (v_sid, v_method, 'SUCCESS', 2, v_exit);
   END LOOP;
 
   -- Pending payment #1 (closed > 2 hours ago, unpaid)
@@ -262,37 +285,43 @@ BEGIN
   RETURNING session_id INTO v_sid;
   UPDATE parking_session SET exit_time = now() - INTERVAL '2 hours 20 minutes' WHERE session_id = v_sid;
 
-  -- Failed payment (1 row)
+  -- Failed payment (1 row + 1 FAILED payment_attempt)
   INSERT INTO parking_session (plate_no, slot_id, entry_time)
   VALUES ('HR 06 JK 8801', (SELECT slot_id FROM slot WHERE slot_code = 'G-60'), now() - INTERVAL '3 hours 30 minutes')
   RETURNING session_id INTO v_sid;
   UPDATE parking_session SET exit_time = now() - INTERVAL '2 hours' WHERE session_id = v_sid;
   UPDATE payment SET status = 'FAILED', method = 'UPI' WHERE session_id = v_sid;
+  INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at)
+  VALUES (v_sid, 'UPI', 'FAILED', 3, now() - INTERVAL '2 hours');
 
   -- Recent PAID exits from prototypes
   INSERT INTO parking_session (plate_no, slot_id, entry_time)
   VALUES ('HR 26 MN 6612', (SELECT slot_id FROM slot WHERE slot_code = 'G-55'), now() - INTERVAL '3 hours 40 minutes')
   RETURNING session_id INTO v_sid;
   UPDATE parking_session SET exit_time = now() - INTERVAL '1 hour 10 minutes' WHERE session_id = v_sid;
-  UPDATE payment SET status = 'PAID', method = 'UPI', paid_at = now() - INTERVAL '1 hour 10 minutes' WHERE session_id = v_sid;
+  UPDATE payment SET status = 'PAID', method = 'UPI', paid_at = now() - INTERVAL '1 hour 10 minutes', paid_by = 3, txn_ref = 'SIM-' || LPAD(v_sid::TEXT, 6, '0') WHERE session_id = v_sid;
+  INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at) VALUES (v_sid, 'UPI', 'SUCCESS', 3, now() - INTERVAL '1 hour 10 minutes');
 
   INSERT INTO parking_session (plate_no, slot_id, entry_time)
   VALUES ('DL 3C KT 4410', (SELECT slot_id FROM slot WHERE slot_code = 'G-56'), now() - INTERVAL '4 hours 30 minutes')
   RETURNING session_id INTO v_sid;
   UPDATE parking_session SET exit_time = now() - INTERVAL '50 minutes' WHERE session_id = v_sid;
-  UPDATE payment SET status = 'PAID', method = 'CARD', paid_at = now() - INTERVAL '50 minutes' WHERE session_id = v_sid;
+  UPDATE payment SET status = 'PAID', method = 'CARD', paid_at = now() - INTERVAL '50 minutes', paid_by = 2, txn_ref = 'SIM-' || LPAD(v_sid::TEXT, 6, '0') WHERE session_id = v_sid;
+  INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at) VALUES (v_sid, 'CARD', 'SUCCESS', 2, now() - INTERVAL '50 minutes');
 
   INSERT INTO parking_session (plate_no, slot_id, entry_time)
   VALUES ('HR 99 R 0456', (SELECT slot_id FROM slot WHERE slot_code = 'G-31'), now() - INTERVAL '1 hour 15 minutes')
   RETURNING session_id INTO v_sid;
   UPDATE parking_session SET exit_time = now() - INTERVAL '25 minutes' WHERE session_id = v_sid;
-  UPDATE payment SET status = 'PAID', method = 'CASH', amount = 40, paid_at = now() - INTERVAL '25 minutes' WHERE session_id = v_sid;
+  UPDATE payment SET status = 'PAID', method = 'CASH', amount = 40, paid_at = now() - INTERVAL '25 minutes', paid_by = 2, txn_ref = 'SIM-' || LPAD(v_sid::TEXT, 6, '0') WHERE session_id = v_sid;
+  INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at) VALUES (v_sid, 'CASH', 'SUCCESS', 2, now() - INTERVAL '25 minutes');
 
   INSERT INTO parking_session (plate_no, slot_id, entry_time)
   VALUES ('HR 06 BQ 2210', (SELECT slot_id FROM slot WHERE slot_code = 'G-07'), now() - INTERVAL '1 hour 45 minutes')
   RETURNING session_id INTO v_sid;
   UPDATE parking_session SET exit_time = now() - INTERVAL '12 minutes' WHERE session_id = v_sid;
-  UPDATE payment SET status = 'PAID', method = 'UPI', paid_at = now() - INTERVAL '12 minutes' WHERE session_id = v_sid;
+  UPDATE payment SET status = 'PAID', method = 'UPI', paid_at = now() - INTERVAL '12 minutes', paid_by = 3, txn_ref = 'SIM-' || LPAD(v_sid::TEXT, 6, '0') WHERE session_id = v_sid;
+  INSERT INTO payment_attempt (session_id, method, outcome, made_by, created_at) VALUES (v_sid, 'UPI', 'SUCCESS', 3, now() - INTERVAL '12 minutes');
 END;
 $$;
 
