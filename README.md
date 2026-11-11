@@ -115,18 +115,26 @@ Open `http://localhost:5173` in your browser.
 - `trg_sync_reservation_slot` (`db/03_triggers.sql`, lines 56–82) — `AFTER INSERT OR DELETE ON reservation`:
   - Synchronizes reserved slot status when reservations are created or removed
 
-### 5. Views (`db/04_views.sql`)
+### 5. Views (`db/04_views.sql` & `db/07_auth.sql`)
 - `v_floor_occupancy` (`db/04_views.sql`, lines 3–21) — per-floor totals, occupied, reserved, free slots, and occupancy percentage
 - `v_active_sessions` (`db/04_views.sql`, lines 23–40) — currently parked vehicles with elapsed minutes and live `calc_fee(session_id)`
 - `v_slot_detail` (`db/04_views.sql`, lines 42–75) — complete slot inspection view combining slot attributes, floor name, open session details, and active reservation
 - `v_vehicle_list` (`db/04_views.sql`, lines 77–90) — registered vehicles with owner name, vehicle type, plan, total visit count, and `last_seen` timestamp
-- `v_payment_list` (`db/04_views.sql`, lines 92–102) — formatted receipt numbers (`P-<id>`), plate, method, amount, status, and timestamp
+- `v_payment_list` (`db/04_views.sql`, lines 92–102; extended in `db/07_auth.sql`, lines 60–97) — formatted receipt numbers (`P-<id>` / `A-<id>`), plate, method, amount, status, timestamp, and `paid_by_label` (`Parker` or staff full name)
 - `v_revenue_by_day` (`db/04_views.sql`, lines 104–112) — daily aggregated count and revenue of `PAID` payments
+- `v_my_sessions` (`db/07_auth.sql`, lines 37–58) — parker-facing view joining `parking_session`, `vehicle`, `vehicle_type`, `slot`, `floor`, and `payment` with `owner_id`, `minutes_parked`, `calc_fee(session_id)`, and `payment_status`
 
-### 6. Transactions & Concurrency Control (`server/src/routes/`)
+### 6. Accounts, Roles & Payment Attempts (`db/07_auth.sql`)
+- `app_user` (`db/07_auth.sql`, lines 4–14) — enforces `role IN ('ADMIN','STAFF','PARKER')` and `CHECK ((role = 'PARKER') = (owner_id IS NOT NULL))` so every parker account is linked 1:1 with an `owner`
+- `payment_attempt` (`db/07_auth.sql`, lines 16–24) — records every payment attempt (`SUCCESS` or `FAILED`) linked to `parking_session` and `app_user`
+- `payment` extensions (`db/07_auth.sql`, lines 26–29) — adds `txn_ref VARCHAR(20) UNIQUE` and `paid_by INT REFERENCES app_user(user_id)`
+
+### 7. Transactions & Concurrency Control (`server/src/routes/`)
 - **Entry Slot Allocation (`FOR UPDATE SKIP LOCKED`)**:
-  - `POST /api/entry` in `server/src/routes/sessions.js` (lines 18–142) — runs inside an explicit `BEGIN ... COMMIT / ROLLBACK` transaction on a dedicated client from `pool.connect()`, selecting the next free bay with `FOR UPDATE SKIP LOCKED` (lines 86–101) so concurrent gate requests never double-book a slot
-- **Exit & Payment Settlement**:
-  - `POST /api/sessions/:id/exit` in `server/src/routes/sessions.js` (lines 225–271) — atomically sets `exit_time` (firing `trg_sync_slot_status` and `trg_create_payment`) and marks the resulting payment `PAID`
-- **Owner & Vehicle Registration**:
-  - `POST /api/vehicles` in `server/src/routes/vehicles.js` (lines 79–140) — reuses an existing owner by phone or creates a new owner and inserts the vehicle inside one transaction
+  - `POST /api/entry` in `server/src/routes/sessions.js` — runs inside an explicit `BEGIN ... COMMIT / ROLLBACK` transaction on a dedicated client from `pool.connect()`, selecting the next free bay with `FOR UPDATE SKIP LOCKED` so concurrent gate requests never double-book a slot
+- **Parker Simulated Payment & Exit**:
+  - `POST /api/me/sessions/:id/pay` in `server/src/routes/me.js` — locks the parker's open session (`WHERE ps.session_id = $1 AND v.owner_id = $2 FOR UPDATE`), records `payment_attempt`, and on success closes the session and settles the trigger-created `payment` row with a `SIM-xxxxxx` reference
+- **Staff Exit & Payment Settlement**:
+  - `POST /api/sessions/:id/exit` in `server/src/routes/sessions.js` — atomically records a `SUCCESS` `payment_attempt`, sets `exit_time` (firing `trg_sync_slot_status` and `trg_create_payment`), and marks the resulting payment `PAID` with `paid_by`
+- **Account & Vehicle Registration**:
+  - `POST /api/auth/register` in `server/src/routes/auth.js` and `POST /api/vehicles` in `server/src/routes/vehicles.js` — reuses an existing owner by phone or creates a new owner, registers the vehicle, and (for `/register`) creates the `PARKER` user inside a single transaction
