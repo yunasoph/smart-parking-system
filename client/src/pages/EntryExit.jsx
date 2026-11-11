@@ -1,13 +1,20 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { get, post } from '../api';
 import { formatCurrency, formatDuration, formatTime24 } from '../format';
 import Segmented from '../components/Segmented';
 
+const PANEL_TABS = [
+  { value: 'entry', label: 'Vehicle entry' },
+  { value: 'exit', label: 'Vehicle exit' }
+];
 const VEHICLE_TYPES = ['Bike', 'Car', 'SUV'];
 const PAYMENT_METHODS = ['UPI', 'Card', 'Cash'];
 
 export default function EntryExit() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') === 'exit' ? 'exit' : 'entry';
+
   const [floors, setFloors] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,7 +31,8 @@ export default function EntryExit() {
   const plateInputRef = useRef(null);
 
   // Exit state
-  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [plateSearch, setPlateSearch] = useState('');
+  const [selectedId, setSelectedId] = useState(null);
   const [exitView, setExitView] = useState('pick'); // 'pick' | 'bill' | 'done'
   const [bill, setBill] = useState(null);
   const [method, setMethod] = useState('UPI');
@@ -42,7 +50,11 @@ export default function EntryExit() {
       ]);
       setFloors(floorsRes);
       setSessions(activeRes);
-      setSelectedIdx(0);
+      if (activeRes.length > 0) {
+        setSelectedId(activeRes[0].id);
+      } else {
+        setSelectedId(null);
+      }
     } catch (err) {
       setPageError(err.message || 'Something went wrong. Try again.');
     } finally {
@@ -57,8 +69,34 @@ export default function EntryExit() {
   const refreshSessions = async () => {
     const activeRes = await get('/api/sessions/active');
     setSessions(activeRes);
-    setSelectedIdx(0);
+    if (activeRes.length > 0) {
+      setSelectedId(activeRes[0].id);
+    } else {
+      setSelectedId(null);
+    }
   };
+
+  const handleTabChange = (nextTab) => {
+    if (nextTab === 'exit') {
+      setSearchParams({ tab: 'exit' });
+      refreshSessions().catch(() => {});
+    } else {
+      setSearchParams({});
+    }
+  };
+
+  const filteredSessions = useMemo(() => {
+    const term = plateSearch.trim().toUpperCase();
+    if (!term) return sessions;
+    return sessions.filter((s) => s.plate.toUpperCase().includes(term));
+  }, [sessions, plateSearch]);
+
+  const selectedSession = useMemo(() => {
+    if (filteredSessions.length === 0) return null;
+    return (
+      filteredSessions.find((s) => s.id === selectedId) || filteredSessions[0]
+    );
+  }, [filteredSessions, selectedId]);
 
   const handleAllocate = async () => {
     if (allocating) return;
@@ -95,15 +133,13 @@ export default function EntryExit() {
   };
 
   const handleCalculateFee = async () => {
-    if (calculating || !sessions.length) return;
-    const current = sessions[selectedIdx] || sessions[0];
-    if (!current) return;
+    if (calculating || !selectedSession) return;
 
     setCalculating(true);
     setExitErr('');
     try {
-      const billData = await get(`/api/sessions/${current.id}/bill`);
-      setBill({ ...billData, sessionId: current.id });
+      const billData = await get(`/api/sessions/${selectedSession.id}/bill`);
+      setBill({ ...billData, sessionId: selectedSession.id });
       setExitView('bill');
     } catch (err) {
       setExitErr(err.message || 'Something went wrong. Try again.');
@@ -140,7 +176,7 @@ export default function EntryExit() {
     try {
       await refreshSessions();
     } catch {
-      // handled if needed
+      // ignore
     }
     setExitView('pick');
   };
@@ -200,318 +236,355 @@ export default function EntryExit() {
             The gate desk. Register arrivals and take payment on departure.
           </p>
         </div>
+        <Segmented
+          id="gate-mode"
+          ariaLabel="Gate action"
+          options={PANEL_TABS}
+          value={activeTab}
+          onChange={handleTabChange}
+        />
       </header>
 
-      <div className="grid-2">
-        {/* ENTRY */}
-        <section className="card stack-lg" aria-label="Vehicle entry">
-          <div className="step-head">
-            <span
-              className="step-no"
-              style={{ background: 'var(--teal-t)', color: 'var(--teal-d)' }}
-            >
-              1
-            </span>
-            <h2 style={{ fontSize: '20px' }}>Vehicle entry</h2>
-          </div>
+      <div className="center-col">
+        {activeTab === 'entry' ? (
+          <section className="card stack-lg" aria-label="Vehicle entry">
+            <div className="step-head">
+              <span
+                className="step-no"
+                style={{ background: 'var(--teal-t)', color: 'var(--teal-d)' }}
+              >
+                1
+              </span>
+              <h2 style={{ fontSize: '20px' }}>Vehicle entry</h2>
+            </div>
 
-          {!ticket ? (
-            <div className="stack-lg" id="entry-form">
-              <div className="field">
-                <label htmlFor="plate">Plate number</label>
-                <input
-                  ref={plateInputRef}
-                  id="plate"
-                  className="input mono"
-                  type="text"
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  placeholder="HR 06 AB 1234"
-                  value={plate}
-                  onChange={(e) => {
-                    setPlate(e.target.value.toUpperCase());
-                    setPlateErr(false);
-                    setEntryErr('');
-                  }}
-                />
-                {plateErr && (
-                  <div className="err" id="plate-err" role="alert">
-                    Enter the plate number to continue.
+            {!ticket ? (
+              <div className="stack-lg" id="entry-form">
+                <div className="field">
+                  <label htmlFor="plate">Plate number</label>
+                  <input
+                    ref={plateInputRef}
+                    id="plate"
+                    className="input mono"
+                    type="text"
+                    autoComplete="off"
+                    autoCapitalize="characters"
+                    placeholder="HR 06 AB 1234"
+                    value={plate}
+                    onChange={(e) => {
+                      setPlate(e.target.value.toUpperCase());
+                      setPlateErr(false);
+                      setEntryErr('');
+                    }}
+                  />
+                  {plateErr && (
+                    <div className="err" id="plate-err" role="alert">
+                      Enter the plate number to continue.
+                    </div>
+                  )}
+                </div>
+
+                <div className="field">
+                  <span className="lbl" id="lbl-type">
+                    Vehicle type
+                  </span>
+                  <Segmented
+                    id="types"
+                    ariaLabelledby="lbl-type"
+                    options={VEHICLE_TYPES}
+                    value={vType}
+                    onChange={setVType}
+                  />
+                </div>
+
+                <div className="field">
+                  <span className="lbl" id="lbl-floor">
+                    Preferred floor
+                  </span>
+                  <Segmented
+                    id="floors"
+                    ariaLabelledby="lbl-floor"
+                    options={floorOptions}
+                    value={prefFloor}
+                    onChange={setPrefFloor}
+                  />
+                </div>
+
+                {entryErr && (
+                  <div className="err" id="entry-err" role="alert">
+                    {entryErr}
+                  </div>
+                )}
+
+                <button
+                  className="btn btn-primary btn-lg btn-block"
+                  type="button"
+                  id="allocate"
+                  disabled={allocating}
+                  onClick={handleAllocate}
+                >
+                  Allocate a slot
+                </button>
+              </div>
+            ) : (
+              <div className="stack" id="entry-done">
+                <div className="ticket">
+                  <div className="top">
+                    <span>Parking ticket</span>
+                    <span className="mono" id="t-no">
+                      #{ticket.ticketNo}
+                    </span>
+                  </div>
+                  <div className="big" id="t-slot">
+                    {ticket.slot}
+                  </div>
+                  <div className="meta">
+                    <div>
+                      <small>Plate</small>
+                      <span className="mono" id="t-plate">
+                        {ticket.plate}
+                      </span>
+                    </div>
+                    <div>
+                      <small>Entered</small>
+                      <span id="t-time">
+                        {formatTime24(ticket.enteredAt)} today
+                      </span>
+                    </div>
+                    <div>
+                      <small>Tariff</small>
+                      <span id="t-rate">
+                        {formatCurrency(ticket.tariff.first)} first hour,{' '}
+                        {formatCurrency(ticket.tariff.extra)} after
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  className="btn btn-block"
+                  type="button"
+                  id="another"
+                  onClick={handleAnotherEntry}
+                >
+                  Register another vehicle
+                </button>
+              </div>
+            )}
+          </section>
+        ) : (
+          <section className="card stack-lg" aria-label="Vehicle exit">
+            <div className="step-head">
+              <span
+                className="step-no"
+                style={{ background: 'var(--occ-t)', color: 'var(--occ)' }}
+              >
+                2
+              </span>
+              <h2 style={{ fontSize: '20px' }}>Vehicle exit</h2>
+            </div>
+
+            {exitView === 'pick' && (
+              <div className="stack" id="exit-pick">
+                <div className="field">
+                  <label htmlFor="exit-search">
+                    Vehicles in the lot ({filteredSessions.length})
+                  </label>
+                  <input
+                    id="exit-search"
+                    className="input mono"
+                    type="search"
+                    placeholder="Filter by plate number…"
+                    value={plateSearch}
+                    onChange={(e) => {
+                      setPlateSearch(e.target.value);
+                      setExitErr('');
+                    }}
+                  />
+                </div>
+
+                <div
+                  className="stack scroll-list"
+                  style={{ gap: '8px' }}
+                  role="group"
+                  aria-label="Vehicles in the lot"
+                  id="sessions"
+                >
+                  {filteredSessions.length === 0 ? (
+                    <div className="empty">
+                      {sessions.length === 0
+                        ? 'No vehicles in the lot.'
+                        : 'No parked vehicles match that plate.'}
+                    </div>
+                  ) : (
+                    filteredSessions.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className="pick"
+                        aria-pressed={selectedSession?.id === s.id}
+                        onClick={() => setSelectedId(s.id)}
+                      >
+                        <span className="l">
+                          <span className="mono" style={{ fontSize: '15px' }}>
+                            {s.plate}
+                          </span>
+                          <small>
+                            {s.type} · slot {s.slot}
+                          </small>
+                        </span>
+                        <span className="r">{formatDuration(s.minutes)}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                {exitErr && (
+                  <div className="err" role="alert">
+                    {exitErr}
+                  </div>
+                )}
+
+                {filteredSessions.length > 0 && (
+                  <div className="sticky-bar">
+                    <button
+                      className="btn btn-navy btn-lg btn-block"
+                      type="button"
+                      id="calc"
+                      disabled={calculating}
+                      onClick={handleCalculateFee}
+                    >
+                      Calculate fee
+                    </button>
                   </div>
                 )}
               </div>
+            )}
 
-              <div className="field">
-                <span className="lbl" id="lbl-type">
-                  Vehicle type
-                </span>
-                <Segmented
-                  id="types"
-                  ariaLabelledby="lbl-type"
-                  options={VEHICLE_TYPES}
-                  value={vType}
-                  onChange={setVType}
-                />
-              </div>
-
-              <div className="field">
-                <span className="lbl" id="lbl-floor">
-                  Preferred floor
-                </span>
-                <Segmented
-                  id="floors"
-                  ariaLabelledby="lbl-floor"
-                  options={floorOptions}
-                  value={prefFloor}
-                  onChange={setPrefFloor}
-                />
-              </div>
-
-              {entryErr && (
-                <div className="err" id="entry-err" role="alert">
-                  {entryErr}
-                </div>
-              )}
-
-              <button
-                className="btn btn-primary btn-lg btn-block"
-                type="button"
-                id="allocate"
-                disabled={allocating}
-                onClick={handleAllocate}
-              >
-                Allocate a slot
-              </button>
-            </div>
-          ) : (
-            <div className="stack" id="entry-done">
-              <div className="ticket">
-                <div className="top">
-                  <span>Parking ticket</span>
-                  <span className="mono" id="t-no">
-                    #{ticket.ticketNo}
+            {exitView === 'bill' && bill && (
+              <div className="stack" id="exit-bill">
+                <div
+                  className="row between"
+                  style={{ alignItems: 'baseline' }}
+                >
+                  <span
+                    className="mono"
+                    style={{ fontSize: '18px' }}
+                    id="b-plate"
+                  >
+                    {bill.plate}
+                  </span>
+                  <span
+                    className="hint"
+                    style={{ fontSize: '13px' }}
+                    id="b-meta"
+                  >
+                    {bill.type} · slot {bill.slot}
                   </span>
                 </div>
-                <div className="big" id="t-slot">
-                  {ticket.slot}
-                </div>
-                <div className="meta">
+                <dl className="kv" id="b-rows">
                   <div>
-                    <small>Plate</small>
-                    <span className="mono" id="t-plate">
-                      {ticket.plate}
-                    </span>
+                    <dt>Time parked</dt>
+                    <dd>{formatDuration(bill.minutes)}</dd>
                   </div>
                   <div>
-                    <small>Entered</small>
-                    <span id="t-time">
-                      {formatTime24(ticket.enteredAt)} today
-                    </span>
+                    <dt>Hours billed (rounded up)</dt>
+                    <dd>{String(bill.hours)}</dd>
                   </div>
                   <div>
-                    <small>Tariff</small>
-                    <span id="t-rate">
-                      {formatCurrency(ticket.tariff.first)} first hour,{' '}
-                      {formatCurrency(ticket.tariff.extra)} after
-                    </span>
+                    <dt>First hour</dt>
+                    <dd>{formatCurrency(bill.first)}</dd>
                   </div>
-                </div>
-              </div>
-              <button
-                className="btn btn-block"
-                type="button"
-                id="another"
-                onClick={handleAnotherEntry}
-              >
-                Register another vehicle
-              </button>
-            </div>
-          )}
-        </section>
-
-        {/* EXIT */}
-        <section className="card stack-lg" aria-label="Vehicle exit">
-          <div className="step-head">
-            <span
-              className="step-no"
-              style={{ background: 'var(--occ-t)', color: 'var(--occ)' }}
-            >
-              2
-            </span>
-            <h2 style={{ fontSize: '20px' }}>Vehicle exit</h2>
-          </div>
-
-          {exitView === 'pick' && (
-            <div className="stack" id="exit-pick">
-              <div
-                className="lbl"
-                style={{ fontSize: '14px', fontWeight: 600 }}
-                id="lbl-in-lot"
-              >
-                Vehicles in the lot
-              </div>
-              <div
-                className="stack"
-                style={{ gap: '8px' }}
-                role="group"
-                aria-labelledby="lbl-in-lot"
-                id="sessions"
-              >
-                {sessions.length === 0 ? (
-                  <div className="empty">No vehicles in the lot.</div>
-                ) : (
-                  sessions.map((s, i) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      className="pick"
-                      aria-pressed={i === selectedIdx}
-                      onClick={() => setSelectedIdx(i)}
-                    >
-                      <span className="l">
-                        <span className="mono" style={{ fontSize: '15px' }}>
-                          {s.plate}
-                        </span>
-                        <small>
-                          {s.type} · slot {s.slot}
-                        </small>
-                      </span>
-                      <span className="r">{formatDuration(s.minutes)}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-              {exitErr && (
-                <div className="err" role="alert">
-                  {exitErr}
-                </div>
-              )}
-              {sessions.length > 0 && (
-                <button
-                  className="btn btn-navy btn-lg btn-block"
-                  type="button"
-                  id="calc"
-                  disabled={calculating}
-                  onClick={handleCalculateFee}
-                >
-                  Calculate fee
-                </button>
-              )}
-            </div>
-          )}
-
-          {exitView === 'bill' && bill && (
-            <div className="stack" id="exit-bill">
-              <div
-                className="row between"
-                style={{ alignItems: 'baseline' }}
-              >
-                <span className="mono" style={{ fontSize: '18px' }} id="b-plate">
-                  {bill.plate}
-                </span>
-                <span className="hint" style={{ fontSize: '13px' }} id="b-meta">
-                  {bill.type} · slot {bill.slot}
-                </span>
-              </div>
-              <dl className="kv" id="b-rows">
-                <div>
-                  <dt>Time parked</dt>
-                  <dd>{formatDuration(bill.minutes)}</dd>
-                </div>
-                <div>
-                  <dt>Hours billed (rounded up)</dt>
-                  <dd>{String(bill.hours)}</dd>
-                </div>
-                <div>
-                  <dt>First hour</dt>
-                  <dd>{formatCurrency(bill.first)}</dd>
-                </div>
-                <div>
-                  <dt>
-                    {bill.extraHours} extra hour
-                    {bill.extraHours === 1 ? '' : 's'} ×{' '}
-                    {formatCurrency(bill.extraEach)}
+                  <div>
+                    <dt>
+                      {bill.extraHours} extra hour
+                      {bill.extraHours === 1 ? '' : 's'} ×{' '}
+                      {formatCurrency(bill.extraEach)}
+                    </dt>
+                    <dd>{formatCurrency(bill.extra)}</dd>
+                  </div>
+                </dl>
+                <div className="total-row">
+                  <dt style={{ fontWeight: 600, fontSize: '14px' }}>
+                    Total due
                   </dt>
-                  <dd>{formatCurrency(bill.extra)}</dd>
+                  <dd id="b-total" style={{ margin: 0 }}>
+                    {formatCurrency(bill.total)}
+                  </dd>
                 </div>
-              </dl>
-              <div className="total-row">
-                <dt style={{ fontWeight: 600, fontSize: '14px' }}>Total due</dt>
-                <dd id="b-total" style={{ margin: 0 }}>
-                  {formatCurrency(bill.total)}
-                </dd>
-              </div>
-              <div className="field">
-                <span className="lbl" id="lbl-method">
-                  Payment method
-                </span>
-                <Segmented
-                  id="methods"
-                  ariaLabelledby="lbl-method"
-                  options={PAYMENT_METHODS}
-                  value={method}
-                  onChange={setMethod}
-                />
-              </div>
-              {exitErr && (
-                <div className="err" role="alert">
-                  {exitErr}
+                <div className="field">
+                  <span className="lbl" id="lbl-method">
+                    Payment method
+                  </span>
+                  <Segmented
+                    id="methods"
+                    ariaLabelledby="lbl-method"
+                    options={PAYMENT_METHODS}
+                    value={method}
+                    onChange={setMethod}
+                  />
                 </div>
-              )}
-              <div className="row">
-                <button
-                  className="btn btn-primary btn-lg"
-                  style={{ flex: '1 1 200px' }}
-                  type="button"
-                  id="collect"
-                  disabled={collecting}
-                  onClick={handleCollectPayment}
-                >
-                  Collect payment
-                </button>
-                <button
-                  className="btn btn-lg"
-                  type="button"
-                  id="back1"
-                  onClick={() => {
-                    setExitErr('');
-                    setExitView('pick');
-                  }}
-                >
-                  Back
-                </button>
+                {exitErr && (
+                  <div className="err" role="alert">
+                    {exitErr}
+                  </div>
+                )}
+                <div className="sticky-bar">
+                  <div className="row">
+                    <button
+                      className="btn btn-primary btn-lg"
+                      style={{ flex: '1 1 220px' }}
+                      type="button"
+                      id="collect"
+                      disabled={collecting}
+                      onClick={handleCollectPayment}
+                    >
+                      Collect payment (cash / assisted)
+                    </button>
+                    <button
+                      className="btn btn-lg"
+                      type="button"
+                      id="back1"
+                      onClick={() => {
+                        setExitErr('');
+                        setExitView('pick');
+                      }}
+                    >
+                      Back
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {exitView === 'done' && receipt && (
-            <div className="stack" id="exit-done">
-              <div className="receipt">
-                <div className="t">Payment received</div>
-                <div className="big" id="r-amount">
-                  {formatCurrency(receipt.amount)} via {receipt.displayMethod}
+            {exitView === 'done' && receipt && (
+              <div className="stack" id="exit-done">
+                <div className="receipt">
+                  <div className="t">Payment received</div>
+                  <div className="big" id="r-amount">
+                    {formatCurrency(receipt.amount)} via {receipt.displayMethod}
+                  </div>
+                  <div style={{ fontSize: '14px' }} id="r-text">
+                    Slot {receipt.slot} is free again. Safe travels,{' '}
+                    <span className="mono">{receipt.plate}</span>.
+                  </div>
                 </div>
-                <div style={{ fontSize: '14px' }} id="r-text">
-                  Slot {receipt.slot} is free again. Safe travels,{' '}
-                  <span className="mono">{receipt.plate}</span>.
+                <div className="row">
+                  <Link className="btn btn-navy" to="/billing">
+                    View in billing
+                  </Link>
+                  <button
+                    className="btn"
+                    type="button"
+                    id="back2"
+                    onClick={handleProcessAnotherExit}
+                  >
+                    Process another exit
+                  </button>
                 </div>
               </div>
-              <div className="row">
-                <Link className="btn btn-navy" to="/billing">
-                  View in billing
-                </Link>
-                <button
-                  className="btn"
-                  type="button"
-                  id="back2"
-                  onClick={handleProcessAnotherExit}
-                >
-                  Process another exit
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
+            )}
+          </section>
+        )}
       </div>
     </>
   );

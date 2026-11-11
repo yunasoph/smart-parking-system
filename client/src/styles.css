@@ -138,3 +138,27 @@ th:last-child,td:last-child{padding-right:0}
 .notice{padding:12px 14px;border-radius:10px;background:var(--teal-t);color:var(--teal-d);font-size:14px;font-weight:500}
 .total-row{display:flex;justify-content:space-between;align-items:baseline}
 .total-row dd{font:700 32px "Space Grotesk",sans-serif!important}
+
+/* ---------- auth, single-column gate desk, modal & print ---------- */
+.auth-wrap{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px;gap:20px}
+.auth-card{width:100%;max-width:440px}
+.auth-brand{display:flex;align-items:center;gap:12px}
+.auth-brand b{font:700 24px "Space Grotesk",sans-serif;color:var(--ink)}
+.center-col{width:100%;max-width:720px;margin:0 auto}
+.scroll-list{max-height:300px;overflow-y:auto;padding-right:4px}
+.sticky-bar{position:sticky;bottom:0;background:var(--card);padding-top:12px;border-top:1px solid var(--line);z-index:2}
+.account-mobile{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:12px;background:var(--navy-3);color:#C9D6E5;font-size:12px}
+@media(min-width:900px){.account-mobile{margin-top:auto}}
+.btn-signout{min-height:36px;padding:0 12px;border-radius:8px;border:1px solid #334E68;background:var(--navy-2);color:#fff;font-size:12px;font-weight:600;cursor:pointer}
+.btn-signout:hover{background:#1E3A5F}
+.modal-backdrop{position:fixed;inset:0;background:rgba(11,31,51,.55);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
+.modal-sheet{width:100%;max-width:460px;background:var(--card);border-radius:16px;border:1px solid var(--line);padding:24px;box-shadow:0 20px 40px rgba(15,27,45,.2)}
+.check-row{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink);cursor:pointer;min-height:44px}
+.check-row input{width:18px;height:18px;accent-color:var(--teal);cursor:pointer}
+.spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media print{
+  .side,.head,.no-print{display:none!important}
+  .main{padding:0!important}
+  body{background:#fff!important}
+}

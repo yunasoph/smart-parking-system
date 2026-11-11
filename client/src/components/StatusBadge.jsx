@@ -14,6 +14,9 @@ const TONE_MAP = {
   Paid: 'teal',
   Pending: 'amber',
   Failed: 'red',
+  Parked: 'navy',
+  Active: 'teal',
+  Disabled: 'red',
   'Monthly pass': 'teal',
   'Pay per hour': 'navy',
   Visitor: 'amber'

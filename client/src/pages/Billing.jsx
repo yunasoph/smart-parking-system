@@ -244,12 +244,13 @@ export default function Billing() {
           </div>
 
           <div className="table-wrap">
-            <table style={{ minWidth: '520px' }}>
+            <table style={{ minWidth: '580px' }}>
               <thead>
                 <tr>
                   <th scope="col">Receipt</th>
                   <th scope="col">Plate</th>
                   <th scope="col">Method</th>
+                  <th scope="col">Paid by</th>
                   <th scope="col" className="num">
                     Amount
                   </th>
@@ -263,6 +264,7 @@ export default function Billing() {
                     <td className="mono">{p.id}</td>
                     <td className="mono">{p.plate}</td>
                     <td>{p.method}</td>
+                    <td>{p.paidBy || '—'}</td>
                     <td className="num">
                       <b>{formatCurrency(p.amount)}</b>
                     </td>

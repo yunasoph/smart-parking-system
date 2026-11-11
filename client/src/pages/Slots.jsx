@@ -278,7 +278,7 @@ export default function Slots() {
                 </Link>
               )}
               {activeSlot.status === 'OCCUPIED' && (
-                <Link className="btn" id="d-busy" to="/entry-exit">
+                <Link className="btn" id="d-busy" to="/entry-exit?tab=exit">
                   Go to exit and billing
                 </Link>
               )}

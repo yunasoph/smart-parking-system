@@ -63,6 +63,9 @@ export default function Dashboard() {
             <Link className="btn" to="/slots">
               Find a slot
             </Link>
+            <Link className="btn btn-navy" to="/entry-exit?tab=exit">
+              Process exit
+            </Link>
             <Link className="btn btn-primary" to="/entry-exit">
               + New entry
             </Link>
@@ -156,6 +159,9 @@ export default function Dashboard() {
         <div className="row">
           <Link className="btn" to="/slots">
             Find a slot
+          </Link>
+          <Link className="btn btn-navy" to="/entry-exit?tab=exit">
+            Process exit
           </Link>
           <Link className="btn btn-primary" to="/entry-exit">
             + New entry
