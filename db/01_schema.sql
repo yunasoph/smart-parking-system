@@ -1,5 +1,6 @@
 -- 01_schema.sql: Core schema, constraints, and indexes for ParkSmart
 
+DROP VIEW IF EXISTS v_my_sessions CASCADE;
 DROP VIEW IF EXISTS v_revenue_by_day CASCADE;
 DROP VIEW IF EXISTS v_payment_list CASCADE;
 DROP VIEW IF EXISTS v_vehicle_list CASCADE;
@@ -7,6 +8,8 @@ DROP VIEW IF EXISTS v_slot_detail CASCADE;
 DROP VIEW IF EXISTS v_active_sessions CASCADE;
 DROP VIEW IF EXISTS v_floor_occupancy CASCADE;
 
+DROP TABLE IF EXISTS payment_attempt CASCADE;
+DROP TABLE IF EXISTS app_user CASCADE;
 DROP TABLE IF EXISTS reservation CASCADE;
 DROP TABLE IF EXISTS payment CASCADE;
 DROP TABLE IF EXISTS parking_session CASCADE;
