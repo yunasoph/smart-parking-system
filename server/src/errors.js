@@ -39,6 +39,12 @@ function errorHandler(err, req, res, _next) {
     if (err.constraint === 'owner_phone_key') {
       return res.status(409).json({ error: 'That phone number is already registered.' });
     }
+    if (err.constraint === 'app_user_email_key') {
+      return res.status(409).json({ error: 'That email address is already registered.' });
+    }
+    if (err.constraint === 'app_user_owner_id_key') {
+      return res.status(409).json({ error: 'An account already exists for that mobile number.' });
+    }
     return res.status(409).json({ error: 'That record already exists.' });
   }
 
