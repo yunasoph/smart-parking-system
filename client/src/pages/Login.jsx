@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
-import { post } from '../api';
 import { useAuth, homeForRole } from '../AuthContext';
 
 export default function Login() {
-  const { user, setUser } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -29,11 +28,7 @@ export default function Login() {
     setSubmitting(true);
     setError('');
     try {
-      const signedIn = await post('/api/auth/login', {
-        email: trimmedEmail,
-        password
-      });
-      setUser(signedIn);
+      const signedIn = await login(trimmedEmail, password);
       navigate(homeForRole(signedIn.role), { replace: true });
     } catch (err) {
       setError(err.message || 'Incorrect email or password.');

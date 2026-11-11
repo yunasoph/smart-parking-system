@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
-import { post } from '../api';
 import { useAuth, homeForRole } from '../AuthContext';
 import Segmented from '../components/Segmented';
 
 const VEHICLE_TYPES = ['Bike', 'Car', 'SUV'];
 
 export default function Register() {
-  const { user, setUser } = useAuth();
+  const { user, register } = useAuth();
   const navigate = useNavigate();
 
   const [name, setName] = useState('');
@@ -56,7 +55,7 @@ export default function Register() {
     setErrors({});
     setServerError('');
     try {
-      const created = await post('/api/auth/register', {
+      await register({
         name: name.trim(),
         email: email.trim(),
         password,
@@ -64,7 +63,6 @@ export default function Register() {
         plate: plate.trim().toUpperCase(),
         type: vType
       });
-      setUser(created);
       navigate('/my-parking', { replace: true });
     } catch (err) {
       setServerError(err.message || 'Could not create your account.');
