@@ -74,6 +74,8 @@ export default function MyVehicles() {
                     <td>
                       {v.slot ? (
                         <StatusBadge status={`Parked · ${v.slot}`} tone="navy" />
+                      ) : v.inLot ? (
+                        <StatusBadge status="Parked" tone="navy" />
                       ) : (
                         <span className="muted">Not in lot</span>
                       )}

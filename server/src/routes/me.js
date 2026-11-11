@@ -21,10 +21,12 @@ router.get(
            ELSE v.plan
          END AS plan,
          COUNT(ps.session_id)::INT AS visits,
-         BOOL_OR(ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS "inLot"
+         BOOL_OR(ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS "inLot",
+         MAX(s.slot_code) FILTER (WHERE ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS slot
        FROM vehicle v
        JOIN vehicle_type vt ON vt.type_id = v.type_id
        LEFT JOIN parking_session ps ON ps.plate_no = v.plate_no
+       LEFT JOIN slot s ON s.slot_id = ps.slot_id
        WHERE v.owner_id = $1
        GROUP BY v.plate_no, vt.type_name, v.plan, v.registered_at
        ORDER BY v.registered_at DESC`,

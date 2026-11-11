@@ -26,7 +26,7 @@ export default function MyParking() {
     try {
       setError('');
       const res = await get('/api/me/sessions/active');
-      setSession(res);
+      setSession(Array.isArray(res) ? res[0] || null : res || null);
     } catch (err) {
       setError(err.message || 'Could not load your parking status.');
     } finally {

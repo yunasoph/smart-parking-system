@@ -89,7 +89,7 @@ export default function MyHistory() {
                     </td>
                     <td>{formatDuration(s.minutes)}</td>
                     <td className="num">
-                      <b>{formatCurrency(s.fee)}</b>
+                      <b>{formatCurrency(s.amount ?? s.fee)}</b>
                     </td>
                     <td>
                       <StatusBadge status={s.status} />
