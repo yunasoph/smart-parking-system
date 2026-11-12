@@ -83,28 +83,47 @@ router.post(
         floorId = floorRes.rows[0].floor_id;
       }
 
-      const slotRes = await client.query(
-        floorId === null
-          ? `SELECT slot_id, slot_code
-             FROM slot
-             WHERE status = 'FREE'
-             ORDER BY (CASE WHEN kind = 'REGULAR' THEN 0 ELSE 1 END), floor_id, slot_no
-             LIMIT 1
-             FOR UPDATE SKIP LOCKED`
-          : `SELECT slot_id, slot_code
-             FROM slot
-             WHERE status = 'FREE' AND floor_id = $1
-             ORDER BY (CASE WHEN kind = 'REGULAR' THEN 0 ELSE 1 END), floor_id, slot_no
-             LIMIT 1
-             FOR UPDATE SKIP LOCKED`,
-        floorId === null ? [] : [floorId]
+      // Check if this vehicle has an active advance reservation
+      const resCheck = await client.query(
+        `SELECT r.reservation_id, r.slot_id, s.slot_code
+         FROM reservation r
+         JOIN slot s ON s.slot_id = r.slot_id
+         WHERE r.plate_no = $1 AND r.expires_at > now()
+         ORDER BY r.created_at DESC
+         LIMIT 1
+         FOR UPDATE OF s`,
+        [plate]
       );
 
-      if (slotRes.rows.length === 0) {
-        throw new HttpError(409, 'No free slot on that floor. Try another floor.');
-      }
+      let slot;
+      if (resCheck.rows.length > 0) {
+        slot = {
+          slot_id: resCheck.rows[0].slot_id,
+          slot_code: resCheck.rows[0].slot_code
+        };
+      } else {
+        const slotRes = await client.query(
+          floorId === null
+            ? `SELECT slot_id, slot_code
+               FROM slot
+               WHERE status = 'FREE'
+               ORDER BY (CASE WHEN kind = 'REGULAR' THEN 0 ELSE 1 END), floor_id, slot_no
+               LIMIT 1
+               FOR UPDATE SKIP LOCKED`
+            : `SELECT slot_id, slot_code
+               FROM slot
+               WHERE status = 'FREE' AND floor_id = $1
+               ORDER BY (CASE WHEN kind = 'REGULAR' THEN 0 ELSE 1 END), floor_id, slot_no
+               LIMIT 1
+               FOR UPDATE SKIP LOCKED`,
+          floorId === null ? [] : [floorId]
+        );
 
-      const slot = slotRes.rows[0];
+        if (slotRes.rows.length === 0) {
+          throw new HttpError(409, 'No free slot on that floor. Try another floor.');
+        }
+        slot = slotRes.rows[0];
+      }
       const sessionRes = await client.query(
         `INSERT INTO parking_session (plate_no, slot_id)
          VALUES ($1, $2)

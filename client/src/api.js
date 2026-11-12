@@ -61,3 +61,7 @@ export function patch(path, body) {
     body: JSON.stringify(body || {})
   });
 }
+
+export function del(path) {
+  return request(path, { method: 'DELETE' });
+}

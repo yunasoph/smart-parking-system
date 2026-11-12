@@ -11,6 +11,7 @@ import Vehicles from './pages/Vehicles';
 import Billing from './pages/Billing';
 import Users from './pages/Users';
 import MyParking from './pages/MyParking';
+import BookSlot from './pages/BookSlot';
 import MyVehicles from './pages/MyVehicles';
 import MyHistory from './pages/MyHistory';
 
@@ -121,6 +122,14 @@ export default function App() {
               element={
                 <RequireRole allowed={['PARKER']}>
                   <MyParking />
+                </RequireRole>
+              }
+            />
+            <Route
+              path="/book-slot"
+              element={
+                <RequireRole allowed={['PARKER']}>
+                  <BookSlot />
                 </RequireRole>
               }
             />

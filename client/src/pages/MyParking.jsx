@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { get, post } from '../api';
 import { formatCurrency, formatDuration, formatTime24 } from '../format';
 import Segmented from '../components/Segmented';
@@ -8,6 +9,7 @@ const PAY_METHODS = ['UPI', 'Card'];
 
 export default function MyParking() {
   const [session, setSession] = useState(null);
+  const [reservations, setReservations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -25,8 +27,12 @@ export default function MyParking() {
   const loadActive = useCallback(async () => {
     try {
       setError('');
-      const res = await get('/api/me/sessions/active');
-      setSession(Array.isArray(res) ? res[0] || null : res || null);
+      const [sessRes, resRes] = await Promise.all([
+        get('/api/me/sessions/active'),
+        get('/api/me/reservations')
+      ]);
+      setSession(Array.isArray(sessRes) ? sessRes[0] || null : sessRes || null);
+      setReservations(Array.isArray(resRes) ? resRes : []);
     } catch (err) {
       setError(err.message || 'Could not load your parking status.');
     } finally {
@@ -127,6 +133,9 @@ export default function MyParking() {
             Live status of your parked vehicle and instant exit payment.
           </p>
         </div>
+        <Link className="btn btn-primary" to="/book-slot">
+          + Book a slot in advance
+        </Link>
       </header>
 
       <div className="center-col stack-lg">
@@ -237,9 +246,54 @@ export default function MyParking() {
               </button>
             </div>
           </section>
+        ) : reservations.some((r) => r.minutesRemaining > 0) ? (
+          <section className="card stack-lg" aria-label="Active advance reservation">
+            {reservations
+              .filter((r) => r.minutesRemaining > 0)
+              .map((r) => (
+                <div key={r.id} className="ticket" style={{ border: '2px solid var(--mint)' }}>
+                  <div className="top">
+                    <span>Active Advance Booking · {r.floor}</span>
+                    <Badge tone="amber">
+                      Held for {r.minutesRemaining} more min
+                    </Badge>
+                  </div>
+                  <div className="big">{r.slot}</div>
+                  <div className="meta">
+                    <div>
+                      <small>Vehicle</small>
+                      <span className="mono">{r.plate}</span>
+                    </div>
+                    <div>
+                      <small>Type</small>
+                      <span>{r.type} · {r.kind}</span>
+                    </div>
+                    <div>
+                      <small>Booking Ref</small>
+                      <span className="mono">#{r.ticketNo}</span>
+                    </div>
+                  </div>
+                  <div className="row between" style={{ borderTop: '1px solid rgba(255,255,255,0.15)', paddingTop: '12px' }}>
+                    <span style={{ fontSize: '13px', color: '#C9D6E5' }}>
+                      Drive to the gate desk; your reserved bay will be automatically assigned.
+                    </span>
+                    <Link className="btn btn-navy" style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.3)' }} to="/book-slot">
+                      Manage booking →
+                    </Link>
+                  </div>
+                </div>
+              ))}
+          </section>
         ) : (
           <section className="card stack" aria-label="No active session">
-            <div className="empty">You are not parked right now.</div>
+            <div className="empty stack" style={{ gap: '12px' }}>
+              <p style={{ margin: 0 }}>You are not parked right now.</p>
+              <div>
+                <Link className="btn btn-primary" to="/book-slot">
+                  + Book a slot in advance
+                </Link>
+              </div>
+            </div>
           </section>
         )}
       </div>

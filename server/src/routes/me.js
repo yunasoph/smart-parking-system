@@ -1,11 +1,23 @@
 const express = require('express');
 const pool = require('../db');
-const { HttpError, asyncHandler } = require('../errors');
+const { HttpError, asyncHandler, normalizePlate } = require('../errors');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
 router.use('/me', requireAuth, requireRole('PARKER'));
+
+async function cleanExpiredReservations() {
+  try {
+    await pool.query(`DELETE FROM reservation WHERE expires_at < now()`);
+  } catch {
+    // ignore
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Vehicles & Plan Management
+// ---------------------------------------------------------------------------
 
 router.get(
   '/me/vehicles',
@@ -20,6 +32,7 @@ router.get(
            WHEN 'VISITOR' THEN 'Visitor'
            ELSE v.plan
          END AS plan,
+         v.plan AS "rawPlan",
          COUNT(ps.session_id)::INT AS visits,
          BOOL_OR(ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS "inLot",
          MAX(s.slot_code) FILTER (WHERE ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS slot
@@ -35,6 +48,348 @@ router.get(
     res.json(rows);
   })
 );
+
+router.post(
+  '/me/vehicles',
+  asyncHandler(async (req, res) => {
+    const plate = normalizePlate(req.body && req.body.plate);
+    const typeName = String((req.body && req.body.type) || 'Car').trim();
+    const rawPlan = String((req.body && req.body.plan) || 'PAY_PER_HOUR').trim();
+
+    if (!plate) {
+      throw new HttpError(422, 'Enter the plate number.');
+    }
+
+    const typeRes = await pool.query(
+      `SELECT type_id, type_name FROM vehicle_type WHERE type_name = $1`,
+      [typeName]
+    );
+    if (typeRes.rows.length === 0) {
+      throw new HttpError(422, 'That vehicle type is not allowed.');
+    }
+    const typeId = typeRes.rows[0].type_id;
+
+    const planMap = {
+      'Monthly pass': 'MONTHLY',
+      'Pay per hour': 'PAY_PER_HOUR',
+      MONTHLY: 'MONTHLY',
+      PAY_PER_HOUR: 'PAY_PER_HOUR'
+    };
+    const targetPlan = planMap[rawPlan] || 'PAY_PER_HOUR';
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existing = await client.query(
+        `SELECT plate_no, owner_id FROM vehicle WHERE plate_no = $1`,
+        [plate]
+      );
+      if (existing.rows.length > 0) {
+        if (existing.rows[0].owner_id === req.user.ownerId) {
+          throw new HttpError(409, 'This vehicle is already registered to your account.');
+        } else {
+          throw new HttpError(409, 'This plate number is already registered.');
+        }
+      }
+
+      await client.query(
+        `INSERT INTO vehicle (plate_no, type_id, owner_id, plan)
+         VALUES ($1, $2, $3, $4)`,
+        [plate, typeId, req.user.ownerId, targetPlan]
+      );
+
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        plate,
+        type: typeRes.rows[0].type_name,
+        plan: targetPlan === 'MONTHLY' ? 'Monthly pass' : 'Pay per hour',
+        rawPlan: targetPlan,
+        visits: 0,
+        inLot: false,
+        slot: null
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+router.patch(
+  '/me/vehicles/:plate/plan',
+  asyncHandler(async (req, res) => {
+    const plate = normalizePlate(req.params.plate);
+    const rawPlan = String((req.body && req.body.plan) || '').trim();
+
+    const planMap = {
+      'Monthly pass': 'MONTHLY',
+      'Pay per hour': 'PAY_PER_HOUR',
+      MONTHLY: 'MONTHLY',
+      PAY_PER_HOUR: 'PAY_PER_HOUR'
+    };
+
+    const targetPlan = planMap[rawPlan];
+    if (!targetPlan) {
+      throw new HttpError(422, 'Invalid plan. Choose Monthly pass or Pay per hour.');
+    }
+
+    const upd = await pool.query(
+      `UPDATE vehicle
+          SET plan = $1
+        WHERE plate_no = $2 AND owner_id = $3
+        RETURNING plate_no, plan`,
+      [targetPlan, plate, req.user.ownerId]
+    );
+
+    if (upd.rows.length === 0) {
+      throw new HttpError(404, 'Vehicle not found on your account.');
+    }
+
+    res.json({
+      plate,
+      plan: targetPlan === 'MONTHLY' ? 'Monthly pass' : 'Pay per hour',
+      rawPlan: targetPlan,
+      message: `Plan updated to ${targetPlan === 'MONTHLY' ? 'Monthly pass' : 'Pay per hour'}.`
+    });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Advance Booking (Reservations)
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/me/reservations',
+  asyncHandler(async (req, res) => {
+    await cleanExpiredReservations();
+    const { rows } = await pool.query(
+      `SELECT
+         r.reservation_id AS id,
+         r.plate_no AS plate,
+         vt.type_name AS type,
+         s.slot_code AS slot,
+         s.kind AS kind,
+         f.floor_name AS floor,
+         f.code AS "floorCode",
+         r.created_at AS "createdAt",
+         r.expires_at AS "expiresAt",
+         GREATEST(0, ROUND(EXTRACT(EPOCH FROM (r.expires_at - now())) / 60))::INT AS "minutesRemaining"
+       FROM reservation r
+       JOIN slot s ON s.slot_id = r.slot_id
+       JOIN floor f ON f.floor_id = s.floor_id
+       JOIN vehicle v ON v.plate_no = r.plate_no
+       JOIN vehicle_type vt ON vt.type_id = v.type_id
+       WHERE v.owner_id = $1
+       ORDER BY r.created_at DESC`,
+      [req.user.ownerId]
+    );
+
+    res.json(
+      rows.map((r) => ({
+        id: r.id,
+        ticketNo: 'RES-' + r.id,
+        plate: r.plate,
+        type: r.type,
+        slot: r.slot,
+        kind: r.kind,
+        floor: r.floor,
+        floorCode: r.floorCode,
+        createdAt: new Date(r.createdAt).toISOString(),
+        expiresAt: new Date(r.expiresAt).toISOString(),
+        minutesRemaining: Number(r.minutesRemaining)
+      }))
+    );
+  })
+);
+
+router.get(
+  '/me/available-slots',
+  asyncHandler(async (_req, res) => {
+    await cleanExpiredReservations();
+    const { rows } = await pool.query(
+      `SELECT
+         s.slot_id AS id,
+         s.slot_code AS code,
+         s.slot_no AS "slotNo",
+         s.kind,
+         f.floor_id AS "floorId",
+         f.floor_name AS "floorName",
+         f.code AS "floorCode"
+       FROM slot s
+       JOIN floor f ON f.floor_id = s.floor_id
+       WHERE s.status = 'FREE'
+       ORDER BY f.floor_id, (CASE WHEN s.kind = 'REGULAR' THEN 0 ELSE 1 END), s.slot_no`
+    );
+    res.json(rows);
+  })
+);
+
+router.post(
+  '/me/reservations',
+  asyncHandler(async (req, res) => {
+    await cleanExpiredReservations();
+
+    const plate = normalizePlate(req.body && req.body.plate);
+    const floorArg = String((req.body && req.body.floor) || 'Any').trim();
+    const kindArg = String((req.body && req.body.kind) || 'ANY').trim().toUpperCase();
+    const slotCodeArg = String((req.body && req.body.slotCode) || '').trim();
+    const holdMinutes = Math.min(180, Math.max(15, Number(req.body && req.body.holdMinutes) || 30));
+
+    if (!plate) {
+      throw new HttpError(422, 'Select a vehicle plate.');
+    }
+
+    const vehCheck = await pool.query(
+      `SELECT v.plate_no, v.type_id, vt.type_name, v.plan
+       FROM vehicle v
+       JOIN vehicle_type vt ON vt.type_id = v.type_id
+       WHERE v.plate_no = $1 AND v.owner_id = $2`,
+      [plate, req.user.ownerId]
+    );
+
+    if (vehCheck.rows.length === 0) {
+      throw new HttpError(403, 'That vehicle is not registered to your account.');
+    }
+
+    const openSession = await pool.query(
+      `SELECT 1 FROM parking_session WHERE plate_no = $1 AND exit_time IS NULL`,
+      [plate]
+    );
+    if (openSession.rows.length > 0) {
+      throw new HttpError(409, 'That vehicle is already parked in the lot.');
+    }
+
+    const existingRes = await pool.query(
+      `SELECT 1 FROM reservation WHERE plate_no = $1 AND expires_at > now()`,
+      [plate]
+    );
+    if (existingRes.rows.length > 0) {
+      throw new HttpError(409, 'You already have an active advance booking for this vehicle.');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      let chosenSlot;
+
+      if (slotCodeArg) {
+        const slotRes = await client.query(
+          `SELECT s.slot_id, s.slot_code, s.kind, f.floor_name, f.code AS floor_code
+           FROM slot s
+           JOIN floor f ON f.floor_id = s.floor_id
+           WHERE s.slot_code = $1 AND s.status = 'FREE'
+           LIMIT 1
+           FOR UPDATE OF s SKIP LOCKED`,
+          [slotCodeArg]
+        );
+        if (slotRes.rows.length === 0) {
+          throw new HttpError(409, 'That slot is not available. Please choose another.');
+        }
+        chosenSlot = slotRes.rows[0];
+      } else {
+        let floorId = null;
+        if (floorArg && floorArg !== 'Any') {
+          const floorRes = await client.query(
+            `SELECT floor_id FROM floor WHERE code = $1 OR floor_name = $1 OR floor_name ILIKE $1 || '%' LIMIT 1`,
+            [floorArg]
+          );
+          if (floorRes.rows.length === 0) {
+            throw new HttpError(422, 'That floor is not allowed.');
+          }
+          floorId = floorRes.rows[0].floor_id;
+        }
+
+        const kindFilter = ['REGULAR', 'EV', 'ACCESSIBLE'].includes(kindArg) ? kindArg : null;
+
+        const slotRes = await client.query(
+          `SELECT s.slot_id, s.slot_code, s.kind, f.floor_name, f.code AS floor_code
+           FROM slot s
+           JOIN floor f ON f.floor_id = s.floor_id
+           WHERE s.status = 'FREE'
+             AND ($1::INT IS NULL OR s.floor_id = $1)
+             AND ($2::TEXT IS NULL OR s.kind = $2)
+           ORDER BY (CASE WHEN s.kind = 'REGULAR' THEN 0 ELSE 1 END), s.floor_id, s.slot_no
+           LIMIT 1
+           FOR UPDATE OF s SKIP LOCKED`,
+          [floorId, kindFilter]
+        );
+
+        if (slotRes.rows.length === 0) {
+          throw new HttpError(409, 'No free slot available matching your preference. Try another floor or slot kind.');
+        }
+        chosenSlot = slotRes.rows[0];
+      }
+
+      const insRes = await client.query(
+        `INSERT INTO reservation (plate_no, slot_id, expires_at)
+         VALUES ($1, $2, now() + ($3 || ' minutes')::INTERVAL)
+         RETURNING reservation_id, created_at, expires_at`,
+        [plate, chosenSlot.slot_id, holdMinutes]
+      );
+
+      await client.query('COMMIT');
+
+      const created = insRes.rows[0];
+      res.status(201).json({
+        id: created.reservation_id,
+        ticketNo: 'RES-' + created.reservation_id,
+        plate,
+        slot: chosenSlot.slot_code,
+        kind: chosenSlot.kind,
+        floor: chosenSlot.floor_name,
+        floorCode: chosenSlot.floor_code,
+        holdMinutes,
+        createdAt: new Date(created.created_at).toISOString(),
+        expiresAt: new Date(created.expires_at).toISOString(),
+        minutesRemaining: holdMinutes
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+router.delete(
+  '/me/reservations/:id',
+  asyncHandler(async (req, res) => {
+    const resId = Number(req.params.id);
+    if (!Number.isInteger(resId) || resId <= 0) {
+      throw new HttpError(404, 'Reservation not found.');
+    }
+
+    const { rows } = await pool.query(
+      `SELECT r.reservation_id, r.plate_no, s.slot_code
+       FROM reservation r
+       JOIN vehicle v ON v.plate_no = r.plate_no
+       JOIN slot s ON s.slot_id = r.slot_id
+       WHERE r.reservation_id = $1 AND v.owner_id = $2`,
+      [resId, req.user.ownerId]
+    );
+
+    if (rows.length === 0) {
+      throw new HttpError(404, 'Reservation not found.');
+    }
+
+    await pool.query(`DELETE FROM reservation WHERE reservation_id = $1`, [resId]);
+
+    res.json({
+      ok: true,
+      message: `Reservation for ${rows[0].plate_no} (slot ${rows[0].slot_code}) cancelled.`
+    });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Active Sessions & Self-Pay Exit
+// ---------------------------------------------------------------------------
 
 router.get(
   '/me/sessions/active',
