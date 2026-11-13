@@ -8,6 +8,7 @@ DROP VIEW IF EXISTS v_slot_detail CASCADE;
 DROP VIEW IF EXISTS v_active_sessions CASCADE;
 DROP VIEW IF EXISTS v_floor_occupancy CASCADE;
 
+DROP TABLE IF EXISTS online_payment CASCADE;
 DROP TABLE IF EXISTS payment_attempt CASCADE;
 DROP TABLE IF EXISTS app_user CASCADE;
 DROP TABLE IF EXISTS reservation CASCADE;
@@ -44,6 +45,7 @@ CREATE TABLE vehicle (
   owner_id      INT NOT NULL REFERENCES owner(owner_id),
   plan          VARCHAR(15)  NOT NULL DEFAULT 'PAY_PER_HOUR'
                 CHECK (plan IN ('MONTHLY','PAY_PER_HOUR','VISITOR')),
+  pass_valid_until TIMESTAMP,                        -- end of a bought monthly pass (NULL = no end date)
   registered_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
@@ -71,6 +73,7 @@ CREATE TABLE parking_session (
   slot_id     INT NOT NULL REFERENCES slot(slot_id),
   entry_time  TIMESTAMP NOT NULL DEFAULT now(),
   exit_time   TIMESTAMP,
+  prepaid_amount NUMERIC(8,2) NOT NULL DEFAULT 0 CHECK (prepaid_amount >= 0),  -- advance booking credit
   CHECK (exit_time IS NULL OR exit_time > entry_time)
 );
 

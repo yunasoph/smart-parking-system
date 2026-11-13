@@ -492,6 +492,16 @@ describe('ParkSmart API', () => {
         }
       );
       assert.equal(cancelBookRes.status, 200);
+      const cancelBody = await cancelBookRes.json();
+      assert.equal(cancelBody.refunded, 40);
+
+      const ledgerRes = await fetch(`${baseUrl}/api/me/payments`, {
+        headers: { Cookie: loginCookie }
+      });
+      const ledger = await ledgerRes.json();
+      const refunded = ledger.find((p) => p.txnRef === okBookBody.txnRef);
+      assert.equal(refunded.kind, 'BOOKING');
+      assert.equal(refunded.status, 'REFUNDED');
 
       // 6c. Subscription plan upgrade requires payment (fail -> 402, success -> 200), then revert to hourly
       const failPlanRes = await fetch(
@@ -517,6 +527,7 @@ describe('ParkSmart API', () => {
       assert.equal(okPlanBody.plan, 'Monthly pass');
       assert.equal(okPlanBody.amount, 1299);
       assert.ok(okPlanBody.txnRef.startsWith('SIM-'));
+      assert.ok(new Date(okPlanBody.validUntil) > new Date());
 
       const revertPlanRes = await fetch(
         `${baseUrl}/api/me/vehicles/${encodeURIComponent('TS 01 PK 4001')}/plan`,
@@ -591,8 +602,104 @@ describe('ParkSmart API', () => {
       });
       const slotInfo = await slotCheck.json();
       assert.equal(slotInfo.status, 'FREE');
+
+      // 10. A paid advance booking is credited at the gate (no double charge)
+      const bookAgainRes = await fetch(`${baseUrl}/api/me/reservations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: loginCookie },
+        body: JSON.stringify({
+          plate: 'TS 01 PK 4001',
+          holdMinutes: 60,
+          method: 'UPI',
+          simulate: 'success'
+        })
+      });
+      assert.equal(bookAgainRes.status, 201);
+      const booking = await bookAgainRes.json();
+
+      const claimRes = await fetch(`${baseUrl}/api/entry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({ plate: 'TS 01 PK 4001', type: 'Car', floor: 'Any' })
+      });
+      assert.equal(claimRes.status, 201);
+      const claimTicket = await claimRes.json();
+      assert.equal(claimTicket.slot, booking.slot);
+      assert.equal(claimTicket.prepaid, 40);
+
+      const creditedRes = await fetch(`${baseUrl}/api/me/sessions/active`, {
+        headers: { Cookie: loginCookie }
+      });
+      const credited = await creditedRes.json();
+      assert.equal(credited[0].prepaid, 40);
+      assert.equal(credited[0].fee, 0);
+
+      const staffBillRes = await fetch(
+        `${baseUrl}/api/sessions/${Number(claimTicket.ticketNo.slice(2))}/bill`,
+        { headers: { Cookie: staffCookie } }
+      );
+      const staffBill = await staffBillRes.json();
+      assert.equal(staffBill.prepaid, 40);
+      assert.equal(staffBill.total, 0);
+
+      const usedLedger = await (
+        await fetch(`${baseUrl}/api/me/payments`, { headers: { Cookie: loginCookie } })
+      ).json();
+      assert.equal(
+        usedLedger.find((p) => p.txnRef === booking.txnRef).status,
+        'USED'
+      );
+
+      // 11. An expired monthly pass no longer waives the fee
+      await pool.query(
+        `UPDATE vehicle SET plan = 'MONTHLY', pass_valid_until = now() - INTERVAL '1 day'
+          WHERE plate_no = 'TS 01 PK 4001'`
+      );
+      const expiredVehRes = await fetch(`${baseUrl}/api/me/vehicles`, {
+        headers: { Cookie: loginCookie }
+      });
+      const expiredVeh = (await expiredVehRes.json()).find((v) => v.plate === 'TS 01 PK 4001');
+      assert.equal(expiredVeh.plan, 'Pass expired');
+      assert.equal(expiredVeh.passActive, false);
     } finally {
+      await pool.query(`DELETE FROM reservation WHERE plate_no LIKE 'TS 01 PK%'`);
       await cleanTestPlates('TS 01 PK');
+    }
+  });
+
+  it('Signing up with a plate first seen as a walk-in takes over that vehicle', async () => {
+    await cleanTestPlates('TS 01 WK');
+    try {
+      const entryRes = await fetch(`${baseUrl}/api/entry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: staffCookie },
+        body: JSON.stringify({ plate: 'TS 01 WK 7001', type: 'Bike', floor: 'Any' })
+      });
+      assert.equal(entryRes.status, 201);
+
+      const regRes = await fetch(`${baseUrl}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Walk In',
+          email: 'testwalkin@parksmart.test',
+          password: 'Password123',
+          phone: '9000999333',
+          plate: 'TS 01 WK 7001',
+          type: 'Bike'
+        })
+      });
+      assert.equal(regRes.status, 201);
+      const cookie = extractCookie(regRes);
+
+      const activeRes = await fetch(`${baseUrl}/api/me/sessions/active`, {
+        headers: { Cookie: cookie }
+      });
+      const active = await activeRes.json();
+      assert.equal(active.length, 1);
+      assert.equal(active[0].plate, 'TS 01 WK 7001');
+    } finally {
+      await cleanTestPlates('TS 01 WK');
     }
   });
 });

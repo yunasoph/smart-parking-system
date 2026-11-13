@@ -54,7 +54,8 @@ SELECT
   ps.exit_time,
   GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (COALESCE(ps.exit_time, now()) - ps.entry_time)) / 60))::INT AS minutes_parked,
   COALESCE(p.amount, calc_fee(ps.session_id)) AS fee,
-  COALESCE(p.status, CASE WHEN ps.exit_time IS NULL THEN 'ACTIVE' ELSE 'PENDING' END) AS payment_status
+  COALESCE(p.status, CASE WHEN ps.exit_time IS NULL THEN 'ACTIVE' ELSE 'PENDING' END) AS payment_status,
+  ps.prepaid_amount
 FROM parking_session ps
 JOIN vehicle v       ON v.plate_no = ps.plate_no
 JOIN vehicle_type vt ON vt.type_id = v.type_id

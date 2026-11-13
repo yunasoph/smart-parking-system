@@ -83,11 +83,27 @@ router.post(
       }
 
       const existingVeh = await client.query(
-        `SELECT owner_id FROM vehicle WHERE plate_no = $1`,
+        `SELECT v.owner_id, o.full_name, o.phone
+           FROM vehicle v
+           JOIN owner o ON o.owner_id = v.owner_id
+          WHERE v.plate_no = $1
+          FOR UPDATE OF v`,
         [plate]
       );
       if (existingVeh.rows.length > 0) {
-        if (existingVeh.rows[0].owner_id !== ownerId) {
+        const current = existingVeh.rows[0];
+        const isWalkIn =
+          current.full_name === 'Visitor' && current.phone === '9999999999';
+        if (isWalkIn) {
+          // First seen at the gate as a walk-in; the real owner takes it over now
+          await client.query(
+            `UPDATE vehicle
+                SET owner_id = $1,
+                    plan = CASE WHEN plan = 'VISITOR' THEN 'PAY_PER_HOUR' ELSE plan END
+              WHERE plate_no = $2`,
+            [ownerId, plate]
+          );
+        } else if (current.owner_id !== ownerId) {
           throw new HttpError(409, 'This plate is already registered.');
         }
       } else {

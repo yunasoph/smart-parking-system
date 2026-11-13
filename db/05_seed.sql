@@ -1,6 +1,7 @@
 -- 05_seed.sql: Idempotent seed data for ParkSmart
 
 TRUNCATE TABLE
+  online_payment,
   payment_attempt,
   app_user,
   reservation,
@@ -367,3 +368,21 @@ SELECT
   END
 FROM chosen_slots cs
 ORDER BY cs.seq;
+
+-- 9. Monthly passes bought online for the MONTHLY vehicles (12 days ago, valid for 30 days)
+UPDATE vehicle
+   SET pass_valid_until = date_trunc('minute', now()) - INTERVAL '12 days' + INTERVAL '30 days'
+ WHERE plan = 'MONTHLY';
+
+INSERT INTO online_payment (kind, plate_no, amount, method, status, txn_ref, valid_until, created_at)
+SELECT 'PASS',
+       v.plate_no,
+       CASE vt.type_name WHEN 'Bike' THEN 499 WHEN 'Car' THEN 1299 ELSE 1799 END,
+       'UPI',
+       'PAID',
+       'SIM-P' || LPAD(ROW_NUMBER() OVER (ORDER BY v.plate_no)::TEXT, 5, '0'),
+       v.pass_valid_until,
+       v.pass_valid_until - INTERVAL '30 days'
+  FROM vehicle v
+  JOIN vehicle_type vt ON vt.type_id = v.type_id
+ WHERE v.plan = 'MONTHLY';

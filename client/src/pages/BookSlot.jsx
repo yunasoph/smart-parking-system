@@ -46,6 +46,7 @@ function durationLabel(val) {
 export default function BookSlot() {
   const [vehicles, setVehicles] = useState([]);
   const [reservations, setReservations] = useState([]);
+  const [bookingLedger, setBookingLedger] = useState([]);
   const [availableSlots, setAvailableSlots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -76,15 +77,21 @@ export default function BookSlot() {
   const loadData = useCallback(async () => {
     try {
       setError('');
-      const [vehsRes, resRes, slotsRes] = await Promise.all([
+      const [vehsRes, resRes, slotsRes, ledgerRes] = await Promise.all([
         get('/api/me/vehicles'),
         get('/api/me/reservations'),
-        get('/api/me/available-slots')
+        get('/api/me/available-slots'),
+        get('/api/me/payments')
       ]);
 
       setVehicles(vehsRes);
       setReservations(resRes);
       setAvailableSlots(slotsRes);
+      setBookingLedger(
+        Array.isArray(ledgerRes)
+          ? ledgerRes.filter((p) => p.kind === 'BOOKING')
+          : []
+      );
 
       if (vehsRes.length > 0 && !selectedPlate) {
         const availableVeh =
@@ -217,13 +224,17 @@ export default function BookSlot() {
   };
 
   const handleCancel = async (id, plate, slot) => {
-    if (!window.confirm(`Cancel reservation for ${plate} (Slot ${slot})?`)) {
+    if (!window.confirm(`Cancel reservation for ${plate} (Slot ${slot}) and refund your booking fee?`)) {
       return;
     }
     setCancellingId(id);
     try {
-      await del(`/api/me/reservations/${id}`);
-      setSuccessNotice(`Reservation for ${plate} was cancelled.`);
+      const res = await del(`/api/me/reservations/${id}`);
+      setSuccessNotice(
+        res.refunded > 0
+          ? `Booking for ${plate} cancelled · ${formatCurrency(res.refunded)} refunded.`
+          : `Reservation for ${plate} was cancelled.`
+      );
       await loadData();
     } catch (err) {
       setError(err.message || 'Failed to cancel reservation.');
@@ -616,11 +627,16 @@ export default function BookSlot() {
                 )}
               </div>
 
-              <div className="total-row">
-                <span style={{ fontWeight: 600, fontSize: '14px' }}>
-                  Advance booking fee ({selectedVehicle?.type || 'Vehicle'} · {durationLabel(duration)})
+              <div className="stack" style={{ gap: '6px' }}>
+                <div className="total-row">
+                  <span style={{ fontWeight: 600, fontSize: '14px' }}>
+                    Advance booking fee ({selectedVehicle?.type || 'Vehicle'} · {durationLabel(duration)})
+                  </span>
+                  <dd style={{ margin: 0 }}>{formatCurrency(bookingFee)}</dd>
+                </div>
+                <span className="hint">
+                  Credited in full toward your parking fee when you check in at the gate. Refunded if you cancel before expiry.
                 </span>
-                <dd style={{ margin: 0 }}>{formatCurrency(bookingFee)}</dd>
               </div>
 
               {bookErr && (
@@ -641,44 +657,51 @@ export default function BookSlot() {
           )}
         </section>
 
-        {/* RECENT BOOKING HISTORY */}
-        {reservations.length > 0 && (
+        {/* RECENT BOOKING HISTORY (PERMANENT LEDGER) */}
+        {bookingLedger.length > 0 && (
           <section className="card stack" aria-label="Reservation history">
-            <h2 style={{ fontSize: '18px' }}>Your reservation history</h2>
+            <h2 style={{ fontSize: '18px' }}>Your booking &amp; payment history</h2>
             <div className="table-wrap">
-              <table style={{ minWidth: '540px' }}>
+              <table style={{ minWidth: '560px' }}>
                 <thead>
                   <tr>
-                    <th scope="col">Booking</th>
+                    <th scope="col">Payment Ref</th>
                     <th scope="col">Plate</th>
                     <th scope="col">Slot</th>
-                    <th scope="col">Floor</th>
-                    <th scope="col">Reserved At</th>
+                    <th scope="col">Method</th>
+                    <th scope="col">Booked At</th>
                     <th scope="col" className="num">
-                      Paid
+                      Amount
                     </th>
                     <th scope="col">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {reservations.map((r) => {
-                    const isActive = r.minutesRemaining > 0;
+                  {bookingLedger.map((b) => {
+                    let badgeStatus = 'Reserved';
+                    let badgeTone = 'amber';
+                    if (b.status === 'USED') {
+                      badgeStatus = 'Claimed';
+                      badgeTone = 'teal';
+                    } else if (b.status === 'REFUNDED') {
+                      badgeStatus = 'Refunded';
+                      badgeTone = 'amber';
+                    } else if (b.status === 'EXPIRED') {
+                      badgeStatus = 'Expired';
+                      badgeTone = 'red';
+                    }
                     return (
-                      <tr key={r.id}>
-                        <td className="mono">#{r.ticketNo}</td>
-                        <td className="mono">{r.plate}</td>
-                        <td style={{ fontWeight: 600 }}>{r.slot}</td>
-                        <td>{r.floor}</td>
-                        <td className="muted">{formatTime24(r.createdAt)}</td>
+                      <tr key={b.id}>
+                        <td className="mono">{b.txnRef}</td>
+                        <td className="mono">{b.plate}</td>
+                        <td style={{ fontWeight: 600 }}>{b.slot || '—'}</td>
+                        <td>{b.method}</td>
+                        <td className="muted">{formatTime24(b.createdAt)}</td>
                         <td className="num">
-                          <b>{formatCurrency(r.amount)}</b>
+                          <b>{formatCurrency(b.amount)}</b>
                         </td>
                         <td>
-                          {isActive ? (
-                            <StatusBadge status="Reserved" tone="amber" />
-                          ) : (
-                            <StatusBadge status="Completed / Expired" tone="navy" />
-                          )}
+                          <StatusBadge status={badgeStatus} tone={badgeTone} />
                         </td>
                       </tr>
                     );

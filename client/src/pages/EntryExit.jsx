@@ -358,6 +358,16 @@ export default function EntryExit() {
                         {formatCurrency(ticket.tariff.extra)} after
                       </span>
                     </div>
+                    {ticket.reserved && (
+                      <div>
+                        <small>Booked bay</small>
+                        <span>
+                          {ticket.prepaid > 0
+                            ? `${formatCurrency(ticket.prepaid)} already paid`
+                            : 'Reservation claimed'}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <button
@@ -502,6 +512,18 @@ export default function EntryExit() {
                     </dt>
                     <dd>{formatCurrency(bill.extra)}</dd>
                   </div>
+                  {bill.passActive && (
+                    <div>
+                      <dt>Monthly pass</dt>
+                      <dd>No hourly charge</dd>
+                    </div>
+                  )}
+                  {bill.prepaid > 0 && (
+                    <div>
+                      <dt>Paid in advance (booking)</dt>
+                      <dd>−{formatCurrency(bill.prepaid)}</dd>
+                    </div>
+                  )}
                 </dl>
                 <div className="total-row">
                   <dt style={{ fontWeight: 600, fontSize: '14px' }}>

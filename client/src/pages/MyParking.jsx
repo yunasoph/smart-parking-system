@@ -223,8 +223,14 @@ export default function MyParking() {
                   <small>Time parked</small>
                   <span>{formatDuration(session.minutes)}</span>
                 </div>
+                {session.prepaid > 0 && (
+                  <div>
+                    <small>Paid on booking</small>
+                    <span>−{formatCurrency(session.prepaid)}</span>
+                  </div>
+                )}
                 <div>
-                  <small>Fee so far</small>
+                  <small>Balance due now</small>
                   <span style={{ fontWeight: 700, color: 'var(--teal-d)' }}>
                     {formatCurrency(session.fee)}
                   </span>
@@ -334,7 +340,8 @@ export default function MyParking() {
 
             <div className="total-row">
               <span style={{ fontWeight: 600, fontSize: '14px' }}>
-                Amount due ({session.plate} · Slot {session.slot})
+                Amount due ({session.plate} · Slot {session.slot}
+                {session.prepaid > 0 ? ` · ${formatCurrency(session.prepaid)} booking credit applied` : ''})
               </span>
               <dd style={{ margin: 0 }}>{formatCurrency(session.fee)}</dd>
             </div>

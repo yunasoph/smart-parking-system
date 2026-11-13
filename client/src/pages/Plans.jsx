@@ -202,7 +202,16 @@ export default function Plans() {
                 </div>
                 <div>
                   <dt>Plan</dt>
-                  <dd>{receipt.plan}</dd>
+                  <dd>
+                    {receipt.plan}
+                    {receipt.validUntil
+                      ? ` · valid until ${new Date(receipt.validUntil).toLocaleDateString('en-IN', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric'
+                        })}`
+                      : ''}
+                  </dd>
                 </div>
                 <div>
                   <dt>Paid at</dt>
@@ -322,9 +331,16 @@ export default function Plans() {
                 </thead>
                 <tbody>
                   {vehicles.map((v) => {
-                    const isMonthly =
-                      v.rawPlan === 'MONTHLY' || v.plan === 'Monthly pass';
+                    const isMonthlyActive = Boolean(v.passActive);
+                    const isExpired = v.rawPlan === 'MONTHLY' && !v.passActive;
                     const price = getMonthlyPrice(v);
+                    const validText = v.passValidUntil
+                      ? new Date(v.passValidUntil).toLocaleDateString('en-IN', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric'
+                        })
+                      : null;
                     return (
                       <tr key={v.plate}>
                         <td className="mono" style={{ fontWeight: 600 }}>
@@ -332,15 +348,38 @@ export default function Plans() {
                         </td>
                         <td>{v.type}</td>
                         <td>
-                          <Badge tone={isMonthly ? 'teal' : 'navy'}>
-                            {isMonthly ? 'Monthly pass' : 'Pay per hour'}
-                          </Badge>
+                          <div className="stack" style={{ gap: '4px' }}>
+                            <div>
+                              <Badge
+                                tone={
+                                  isMonthlyActive
+                                    ? 'teal'
+                                    : isExpired
+                                    ? 'red'
+                                    : 'navy'
+                                }
+                              >
+                                {isMonthlyActive
+                                  ? 'Monthly pass'
+                                  : isExpired
+                                  ? 'Pass expired'
+                                  : 'Pay per hour'}
+                              </Badge>
+                            </div>
+                            {validText && (
+                              <span className="hint" style={{ fontSize: '12px' }}>
+                                {isMonthlyActive
+                                  ? `Valid until ${validText}`
+                                  : `Expired on ${validText}`}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="num">
-                          <b>{formatCurrency(price)}</b> / mo
+                          <b>{formatCurrency(price)}</b> / 30 days
                         </td>
                         <td className="num">
-                          {isMonthly ? (
+                          {isMonthlyActive ? (
                             <button
                               type="button"
                               className="btn"
@@ -359,7 +398,9 @@ export default function Plans() {
                               style={{ minHeight: '36px', padding: '0 14px', fontSize: '13px' }}
                               onClick={() => handleOpenSubscribe(v)}
                             >
-                              Subscribe ({formatCurrency(price)}/mo)
+                              {isExpired
+                                ? `Renew pass (${formatCurrency(price)})`
+                                : `Subscribe (${formatCurrency(price)}/mo)`}
                             </button>
                           )}
                         </td>

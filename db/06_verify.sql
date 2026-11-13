@@ -243,3 +243,47 @@ BEGIN
   END;
 END;
 $$;
+
+-- Check 10: an advance booking payment is credited (100 parked - 40 prepaid = 60 owed),
+-- and a monthly pass only waives the fee while it is still valid
+DO $$
+DECLARE
+  v_free_slot_id INT;
+  v_car_plate    VARCHAR(15);
+  v_sid          INT;
+  v_credited     NUMERIC;
+  v_valid_pass   NUMERIC;
+  v_old_pass     NUMERIC;
+  v_base_time    TIMESTAMP := TIMESTAMP '2026-11-10 10:00:00';
+BEGIN
+  SELECT slot_id INTO v_free_slot_id FROM slot WHERE status = 'FREE' ORDER BY slot_id DESC LIMIT 1;
+
+  SELECT v.plate_no INTO v_car_plate
+    FROM vehicle v
+    JOIN vehicle_type vt ON vt.type_id = v.type_id
+   WHERE vt.type_name = 'Car' AND v.plan = 'PAY_PER_HOUR'
+     AND NOT EXISTS (SELECT 1 FROM parking_session ps WHERE ps.plate_no = v.plate_no AND ps.exit_time IS NULL)
+   LIMIT 1;
+
+  INSERT INTO parking_session (plate_no, slot_id, entry_time, exit_time, prepaid_amount)
+  VALUES (v_car_plate, v_free_slot_id, v_base_time, v_base_time + INTERVAL '2 hours 10 minutes', 40)
+  RETURNING session_id INTO v_sid;
+  v_credited := calc_fee(v_sid);
+
+  UPDATE vehicle SET plan = 'MONTHLY', pass_valid_until = v_base_time + INTERVAL '1 day' WHERE plate_no = v_car_plate;
+  UPDATE parking_session SET prepaid_amount = 0 WHERE session_id = v_sid;
+  v_valid_pass := calc_fee(v_sid);
+
+  UPDATE vehicle SET pass_valid_until = v_base_time WHERE plate_no = v_car_plate;
+  v_old_pass := calc_fee(v_sid);
+
+  DELETE FROM parking_session WHERE session_id = v_sid;
+  UPDATE vehicle SET plan = 'PAY_PER_HOUR', pass_valid_until = NULL WHERE plate_no = v_car_plate;
+
+  IF v_credited = 60 AND v_valid_pass = 0 AND v_old_pass = 100 THEN
+    RAISE NOTICE 'PASS 10: booking credit gives % owed, valid pass gives %, expired pass gives %', v_credited, v_valid_pass, v_old_pass;
+  ELSE
+    RAISE NOTICE 'FAIL 10: got % (expected 60), % (expected 0), % (expected 100)', v_credited, v_valid_pass, v_old_pass;
+  END IF;
+END;
+$$;

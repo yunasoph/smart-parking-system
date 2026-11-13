@@ -30,7 +30,7 @@ router.get(
 router.get(
   '/billing/summary',
   asyncHandler(async (_req, res) => {
-    const [totalsRes, failedRes, daysRes, mixRes] = await Promise.all([
+    const [totalsRes, failedRes, daysRes, mixRes, onlineRes] = await Promise.all([
       pool.query(
         `SELECT
            COALESCE(SUM(amount) FILTER (
@@ -72,12 +72,24 @@ router.get(
          FROM payment
          WHERE status = 'PAID'
            AND COALESCE(paid_at, created_at)::DATE = CURRENT_DATE`
+      ),
+      // Money taken online before parking (refunded bookings excluded)
+      pool.query(
+        `SELECT
+           COALESCE(SUM(amount) FILTER (WHERE kind = 'BOOKING'), 0)::FLOAT AS bookings,
+           COUNT(*) FILTER (WHERE kind = 'BOOKING')::INT AS "bookingCount",
+           COALESCE(SUM(amount) FILTER (WHERE kind = 'PASS'), 0)::FLOAT AS passes,
+           COUNT(*) FILTER (WHERE kind = 'PASS')::INT AS "passCount"
+         FROM online_payment
+         WHERE status <> 'REFUNDED'
+           AND created_at::DATE = CURRENT_DATE`
       )
     ]);
 
     const t = totalsRes.rows[0];
     const f = failedRes.rows[0];
     const m = mixRes.rows[0];
+    const o = onlineRes.rows[0];
 
     let upiPct = 0;
     let cardPct = 0;
@@ -95,6 +107,12 @@ router.get(
       pendingCount: t.pendingCount,
       failed: Number(f.failed),
       failedCount: f.failedCount,
+      onlineToday: {
+        bookings: Number(o.bookings),
+        bookingCount: o.bookingCount,
+        passes: Number(o.passes),
+        passCount: o.passCount
+      },
       revenueByDay: daysRes.rows.map((r) => ({
         day: r.day,
         amount: Number(r.amount)
@@ -190,6 +208,36 @@ router.get(
         time: r.time,
         status: r.status,
         paidBy: r.paidBy
+      }))
+    );
+  })
+);
+
+router.get(
+  '/online-payments',
+  asyncHandler(async (_req, res) => {
+    const { rows } = await pool.query(
+      `SELECT op.online_payment_id AS id, op.kind, op.plate_no AS plate,
+              op.amount, op.method, op.status, op.txn_ref AS "txnRef",
+              TO_CHAR(op.created_at, 'DD Mon HH24:MI') AS time,
+              s.slot_code AS slot, op.valid_until AS "validUntil"
+         FROM online_payment op
+         LEFT JOIN slot s ON s.slot_id = op.slot_id
+        ORDER BY op.created_at DESC
+        LIMIT 20`
+    );
+    res.json(
+      rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        plate: r.plate,
+        amount: Number(r.amount),
+        method: r.method === 'CARD' ? 'Card' : r.method,
+        status: r.status,
+        txnRef: r.txnRef,
+        time: r.time,
+        slot: r.slot,
+        validUntil: r.validUntil ? new Date(r.validUntil).toISOString() : null
       }))
     );
   })

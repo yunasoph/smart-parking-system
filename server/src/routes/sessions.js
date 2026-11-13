@@ -85,7 +85,7 @@ router.post(
 
       // Check if this vehicle has an active advance reservation
       const resCheck = await client.query(
-        `SELECT r.reservation_id, r.slot_id, s.slot_code
+        `SELECT r.reservation_id, r.slot_id, s.slot_code, r.amount, r.txn_ref
          FROM reservation r
          JOIN slot s ON s.slot_id = r.slot_id
          WHERE r.plate_no = $1 AND r.expires_at > now()
@@ -96,11 +96,21 @@ router.post(
       );
 
       let slot;
+      let prepaid = 0;
       if (resCheck.rows.length > 0) {
         slot = {
           slot_id: resCheck.rows[0].slot_id,
           slot_code: resCheck.rows[0].slot_code
         };
+        prepaid = Number(resCheck.rows[0].amount || 0);
+        // The advance payment is now credited against this visit
+        if (resCheck.rows[0].txn_ref) {
+          await client.query(
+            `UPDATE online_payment SET status = 'USED'
+              WHERE txn_ref = $1 AND status = 'PAID'`,
+            [resCheck.rows[0].txn_ref]
+          );
+        }
       } else {
         const slotRes = await client.query(
           floorId === null
@@ -125,10 +135,10 @@ router.post(
         slot = slotRes.rows[0];
       }
       const sessionRes = await client.query(
-        `INSERT INTO parking_session (plate_no, slot_id)
-         VALUES ($1, $2)
+        `INSERT INTO parking_session (plate_no, slot_id, prepaid_amount)
+         VALUES ($1, $2, $3)
          RETURNING session_id, entry_time`,
-        [plate, slot.slot_id]
+        [plate, slot.slot_id, prepaid]
       );
 
       const tariffRes = await client.query(
@@ -148,6 +158,8 @@ router.post(
         slot: slot.slot_code,
         plate,
         enteredAt: new Date(session.entry_time).toISOString(),
+        prepaid,
+        reserved: resCheck.rows.length > 0,
         tariff: {
           first: Number(tariff.first),
           extra: Number(tariff.extra)
@@ -194,13 +206,15 @@ router.get(
          s.slot_code AS slot,
          GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (COALESCE(ps.exit_time, now()) - ps.entry_time)) / 60))::INT AS minutes,
          fn_hours_billed(ps.session_id) AS hours,
-         CASE WHEN v.plan = 'MONTHLY' THEN 0 ELSE t.first_hour END AS first,
+         fn_pass_active(ps.session_id) AS "passActive",
+         CASE WHEN fn_pass_active(ps.session_id) THEN 0 ELSE t.first_hour END AS first,
          (fn_hours_billed(ps.session_id) - 1)::INT AS "extraHours",
-         CASE WHEN v.plan = 'MONTHLY' THEN 0 ELSE t.extra_hour END AS "extraEach",
+         CASE WHEN fn_pass_active(ps.session_id) THEN 0 ELSE t.extra_hour END AS "extraEach",
          CASE
-           WHEN v.plan = 'MONTHLY' THEN 0
+           WHEN fn_pass_active(ps.session_id) THEN 0
            ELSE (fn_hours_billed(ps.session_id) - 1) * t.extra_hour
          END AS extra,
+         ps.prepaid_amount AS prepaid,
          calc_fee(ps.session_id) AS total
        FROM parking_session ps
        JOIN vehicle v       ON v.plate_no = ps.plate_no
@@ -226,6 +240,8 @@ router.get(
       extraHours: Number(row.extraHours),
       extraEach: Number(row.extraEach),
       extra: Number(row.extra),
+      prepaid: Number(row.prepaid),
+      passActive: Boolean(row.passActive),
       total: Number(row.total)
     });
   })
@@ -240,6 +256,9 @@ router.post(
     }
 
     const rawMethod = String((req.body && req.body.method) || 'UPI').trim().toUpperCase();
+    if (!['UPI', 'CARD', 'CASH'].includes(rawMethod)) {
+      throw new HttpError(422, 'Choose UPI, Card or Cash.');
+    }
 
     const client = await pool.connect();
     try {
