@@ -438,7 +438,7 @@ describe('ParkSmart API', () => {
 
       // 6. Parker cannot pay another parker's active session -> 404
       const otherSessionRes = await pool.query(
-        `SELECT session_id FROM parking_session WHERE plate_no = 'HR 06 CD 3380' AND exit_time IS NULL LIMIT 1`
+        `SELECT session_id FROM parking_session WHERE plate_no != 'TS 01 PK 4001' AND exit_time IS NULL LIMIT 1`
       );
       assert.equal(otherSessionRes.rows.length, 1);
       const otherSessionId = otherSessionRes.rows[0].session_id;
@@ -449,6 +449,84 @@ describe('ParkSmart API', () => {
         body: JSON.stringify({ method: 'UPI', simulate: 'success' })
       });
       assert.equal(payOtherRes.status, 404);
+
+      // 6b. Advance booking requires payment (fail -> 402, success -> 201 with txnRef)
+      const failBookRes = await fetch(`${baseUrl}/api/me/reservations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: loginCookie },
+        body: JSON.stringify({
+          plate: 'TS 01 PK 4001',
+          floor: 'Any',
+          kind: 'ANY',
+          holdMinutes: 60,
+          method: 'UPI',
+          simulate: 'fail'
+        })
+      });
+      assert.equal(failBookRes.status, 402);
+
+      const okBookRes = await fetch(`${baseUrl}/api/me/reservations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: loginCookie },
+        body: JSON.stringify({
+          plate: 'TS 01 PK 4001',
+          floor: 'Any',
+          kind: 'ANY',
+          holdMinutes: 60,
+          method: 'UPI',
+          simulate: 'success'
+        })
+      });
+      assert.equal(okBookRes.status, 201);
+      const okBookBody = await okBookRes.json();
+      assert.equal(okBookBody.amount, 40);
+      assert.equal(okBookBody.method, 'UPI');
+      assert.ok(okBookBody.txnRef.startsWith('SIM-'));
+      assert.ok(okBookBody.slot);
+
+      const cancelBookRes = await fetch(
+        `${baseUrl}/api/me/reservations/${okBookBody.id}`,
+        {
+          method: 'DELETE',
+          headers: { Cookie: loginCookie }
+        }
+      );
+      assert.equal(cancelBookRes.status, 200);
+
+      // 6c. Subscription plan upgrade requires payment (fail -> 402, success -> 200), then revert to hourly
+      const failPlanRes = await fetch(
+        `${baseUrl}/api/me/vehicles/${encodeURIComponent('TS 01 PK 4001')}/plan`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Cookie: loginCookie },
+          body: JSON.stringify({ plan: 'MONTHLY', method: 'CARD', simulate: 'fail' })
+        }
+      );
+      assert.equal(failPlanRes.status, 402);
+
+      const okPlanRes = await fetch(
+        `${baseUrl}/api/me/vehicles/${encodeURIComponent('TS 01 PK 4001')}/plan`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Cookie: loginCookie },
+          body: JSON.stringify({ plan: 'MONTHLY', method: 'CARD', simulate: 'success' })
+        }
+      );
+      assert.equal(okPlanRes.status, 200);
+      const okPlanBody = await okPlanRes.json();
+      assert.equal(okPlanBody.plan, 'Monthly pass');
+      assert.equal(okPlanBody.amount, 1299);
+      assert.ok(okPlanBody.txnRef.startsWith('SIM-'));
+
+      const revertPlanRes = await fetch(
+        `${baseUrl}/api/me/vehicles/${encodeURIComponent('TS 01 PK 4001')}/plan`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Cookie: loginCookie },
+          body: JSON.stringify({ plan: 'PAY_PER_HOUR' })
+        }
+      );
+      assert.equal(revertPlanRes.status, 200);
 
       // 7. Staff enters the parker's vehicle TS 01 PK 4001 into a slot
       const entryRes = await fetch(`${baseUrl}/api/entry`, {

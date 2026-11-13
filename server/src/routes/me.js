@@ -7,8 +7,29 @@ const router = express.Router();
 
 router.use('/me', requireAuth, requireRole('PARKER'));
 
+const MONTHLY_PASS_PRICES = {
+  Bike: 499,
+  Car: 1299,
+  SUV: 1799
+};
+
+let reservationColumnsReady = false;
+
+async function ensureReservationColumns() {
+  if (reservationColumnsReady) return;
+  await pool.query(`
+    ALTER TABLE reservation
+      ADD COLUMN IF NOT EXISTS amount NUMERIC(8,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS method VARCHAR(10),
+      ADD COLUMN IF NOT EXISTS txn_ref VARCHAR(20),
+      ADD COLUMN IF NOT EXISTS paid_by INT
+  `);
+  reservationColumnsReady = true;
+}
+
 async function cleanExpiredReservations() {
   try {
+    await ensureReservationColumns();
     await pool.query(`DELETE FROM reservation WHERE expires_at < now()`);
   } catch {
     // ignore
@@ -33,19 +54,29 @@ router.get(
            ELSE v.plan
          END AS plan,
          v.plan AS "rawPlan",
+         t.first_hour AS "firstHour",
+         t.extra_hour AS "extraHour",
          COUNT(ps.session_id)::INT AS visits,
          BOOL_OR(ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS "inLot",
          MAX(s.slot_code) FILTER (WHERE ps.session_id IS NOT NULL AND ps.exit_time IS NULL) AS slot
        FROM vehicle v
        JOIN vehicle_type vt ON vt.type_id = v.type_id
+       JOIN tariff t ON t.type_id = v.type_id
        LEFT JOIN parking_session ps ON ps.plate_no = v.plate_no
        LEFT JOIN slot s ON s.slot_id = ps.slot_id
        WHERE v.owner_id = $1
-       GROUP BY v.plate_no, vt.type_name, v.plan, v.registered_at
+       GROUP BY v.plate_no, vt.type_name, v.plan, t.first_hour, t.extra_hour, v.registered_at
        ORDER BY v.registered_at DESC`,
       [req.user.ownerId]
     );
-    res.json(rows);
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        firstHour: Number(r.firstHour),
+        extraHour: Number(r.extraHour),
+        monthlyPrice: MONTHLY_PASS_PRICES[r.type] || 1299
+      }))
+    );
   })
 );
 
@@ -137,23 +168,76 @@ router.patch(
       throw new HttpError(422, 'Invalid plan. Choose Monthly pass or Pay per hour.');
     }
 
-    const upd = await pool.query(
-      `UPDATE vehicle
-          SET plan = $1
-        WHERE plate_no = $2 AND owner_id = $3
-        RETURNING plate_no, plan`,
-      [targetPlan, plate, req.user.ownerId]
+    const vehRes = await pool.query(
+      `SELECT v.plate_no, vt.type_name AS type
+       FROM vehicle v
+       JOIN vehicle_type vt ON vt.type_id = v.type_id
+       WHERE v.plate_no = $1 AND v.owner_id = $2`,
+      [plate, req.user.ownerId]
     );
-
-    if (upd.rows.length === 0) {
+    if (vehRes.rows.length === 0) {
       throw new HttpError(404, 'Vehicle not found on your account.');
     }
+    const vehType = vehRes.rows[0].type;
+
+    if (targetPlan === 'MONTHLY') {
+      const rawMethod = String((req.body && req.body.method) || 'UPI')
+        .trim()
+        .toUpperCase();
+      if (!['UPI', 'CARD'].includes(rawMethod)) {
+        throw new HttpError(422, 'Choose UPI or Card to pay.');
+      }
+
+      const simulate = String((req.body && req.body.simulate) || 'success')
+        .trim()
+        .toLowerCase();
+
+      const delayMs = process.env.NODE_ENV === 'test' ? 150 : 1200;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      if (simulate === 'fail') {
+        return res
+          .status(402)
+          .json({ error: 'Payment failed. Please try again.' });
+      }
+
+      const amount = MONTHLY_PASS_PRICES[vehType] || 1299;
+      const txnRef =
+        'SIM-' + Math.floor(100000 + Math.random() * 900000).toString();
+
+      await pool.query(
+        `UPDATE vehicle
+            SET plan = 'MONTHLY'
+          WHERE plate_no = $1 AND owner_id = $2`,
+        [plate, req.user.ownerId]
+      );
+
+      return res.json({
+        plate,
+        type: vehType,
+        plan: 'Monthly pass',
+        rawPlan: 'MONTHLY',
+        amount,
+        method: rawMethod,
+        txnRef,
+        paidAt: new Date().toISOString(),
+        message: `Subscribed ${plate} to Monthly pass.`
+      });
+    }
+
+    await pool.query(
+      `UPDATE vehicle
+          SET plan = 'PAY_PER_HOUR'
+        WHERE plate_no = $1 AND owner_id = $2`,
+      [plate, req.user.ownerId]
+    );
 
     res.json({
       plate,
-      plan: targetPlan === 'MONTHLY' ? 'Monthly pass' : 'Pay per hour',
-      rawPlan: targetPlan,
-      message: `Plan updated to ${targetPlan === 'MONTHLY' ? 'Monthly pass' : 'Pay per hour'}.`
+      type: vehType,
+      plan: 'Pay per hour',
+      rawPlan: 'PAY_PER_HOUR',
+      message: `Plan updated to Pay per hour.`
     });
   })
 );
@@ -175,6 +259,9 @@ router.get(
          s.kind AS kind,
          f.floor_name AS floor,
          f.code AS "floorCode",
+         r.amount,
+         r.method,
+         r.txn_ref AS "txnRef",
          r.created_at AS "createdAt",
          r.expires_at AS "expiresAt",
          GREATEST(0, ROUND(EXTRACT(EPOCH FROM (r.expires_at - now())) / 60))::INT AS "minutesRemaining"
@@ -198,6 +285,9 @@ router.get(
         kind: r.kind,
         floor: r.floor,
         floorCode: r.floorCode,
+        amount: Number(r.amount || 0),
+        method: r.method || 'UPI',
+        txnRef: r.txnRef || null,
         createdAt: new Date(r.createdAt).toISOString(),
         expiresAt: new Date(r.expiresAt).toISOString(),
         minutesRemaining: Number(r.minutesRemaining)
@@ -238,15 +328,21 @@ router.post(
     const kindArg = String((req.body && req.body.kind) || 'ANY').trim().toUpperCase();
     const slotCodeArg = String((req.body && req.body.slotCode) || '').trim();
     const holdMinutes = Math.min(180, Math.max(15, Number(req.body && req.body.holdMinutes) || 30));
+    const rawMethod = String((req.body && req.body.method) || 'UPI').trim().toUpperCase();
+    const simulate = String((req.body && req.body.simulate) || 'success').trim().toLowerCase();
 
     if (!plate) {
       throw new HttpError(422, 'Select a vehicle plate.');
     }
+    if (!['UPI', 'CARD'].includes(rawMethod)) {
+      throw new HttpError(422, 'Choose UPI or Card to pay for the booking.');
+    }
 
     const vehCheck = await pool.query(
-      `SELECT v.plate_no, v.type_id, vt.type_name, v.plan
+      `SELECT v.plate_no, v.type_id, vt.type_name, v.plan, t.first_hour, t.extra_hour
        FROM vehicle v
        JOIN vehicle_type vt ON vt.type_id = v.type_id
+       JOIN tariff t ON t.type_id = v.type_id
        WHERE v.plate_no = $1 AND v.owner_id = $2`,
       [plate, req.user.ownerId]
     );
@@ -254,6 +350,11 @@ router.post(
     if (vehCheck.rows.length === 0) {
       throw new HttpError(403, 'That vehicle is not registered to your account.');
     }
+
+    const veh = vehCheck.rows[0];
+    const hours = Math.max(1, Math.ceil(holdMinutes / 60));
+    const bookingFee =
+      Number(veh.first_hour) + (hours - 1) * Number(veh.extra_hour);
 
     const openSession = await pool.query(
       `SELECT 1 FROM parking_session WHERE plate_no = $1 AND exit_time IS NULL`,
@@ -269,6 +370,16 @@ router.post(
     );
     if (existingRes.rows.length > 0) {
       throw new HttpError(409, 'You already have an active advance booking for this vehicle.');
+    }
+
+    // Simulated payment gateway delay
+    const delayMs = process.env.NODE_ENV === 'test' ? 150 : 1200;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+    if (simulate === 'fail') {
+      return res
+        .status(402)
+        .json({ error: 'Payment failed. Please try again.' });
     }
 
     const client = await pool.connect();
@@ -325,11 +436,14 @@ router.post(
         chosenSlot = slotRes.rows[0];
       }
 
+      const txnRef =
+        'SIM-' + Math.floor(100000 + Math.random() * 900000).toString();
+
       const insRes = await client.query(
-        `INSERT INTO reservation (plate_no, slot_id, expires_at)
-         VALUES ($1, $2, now() + ($3 || ' minutes')::INTERVAL)
+        `INSERT INTO reservation (plate_no, slot_id, expires_at, amount, method, txn_ref, paid_by)
+         VALUES ($1, $2, now() + ($3 || ' minutes')::INTERVAL, $4, $5, $6, $7)
          RETURNING reservation_id, created_at, expires_at`,
-        [plate, chosenSlot.slot_id, holdMinutes]
+        [plate, chosenSlot.slot_id, holdMinutes, bookingFee, rawMethod, txnRef, req.user.id]
       );
 
       await client.query('COMMIT');
@@ -339,11 +453,15 @@ router.post(
         id: created.reservation_id,
         ticketNo: 'RES-' + created.reservation_id,
         plate,
+        type: veh.type_name,
         slot: chosenSlot.slot_code,
         kind: chosenSlot.kind,
         floor: chosenSlot.floor_name,
         floorCode: chosenSlot.floor_code,
         holdMinutes,
+        amount: bookingFee,
+        method: rawMethod,
+        txnRef,
         createdAt: new Date(created.created_at).toISOString(),
         expiresAt: new Date(created.expires_at).toISOString(),
         minutesRemaining: holdMinutes

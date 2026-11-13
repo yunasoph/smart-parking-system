@@ -78,3 +78,23 @@ SELECT
 FROM payment p
 JOIN parking_session ps ON ps.session_id = p.session_id
 LEFT JOIN app_user u    ON u.user_id = p.paid_by;
+
+ALTER TABLE reservation
+  ADD COLUMN IF NOT EXISTS amount NUMERIC(8,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS method VARCHAR(10),
+  ADD COLUMN IF NOT EXISTS txn_ref VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS paid_by INT;
+
+ALTER TABLE reservation
+  DROP CONSTRAINT IF EXISTS reservation_method_check;
+
+ALTER TABLE reservation
+  ADD CONSTRAINT reservation_method_check
+  CHECK (method IS NULL OR method IN ('UPI','CARD','CASH'));
+
+ALTER TABLE reservation
+  DROP CONSTRAINT IF EXISTS reservation_paid_by_fkey;
+
+ALTER TABLE reservation
+  ADD CONSTRAINT reservation_paid_by_fkey
+  FOREIGN KEY (paid_by) REFERENCES app_user(user_id);

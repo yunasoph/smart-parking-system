@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { get, post, del } from '../api';
-import { formatTime24 } from '../format';
+import { formatCurrency, formatTime24 } from '../format';
 import Segmented from '../components/Segmented';
 import Badge from '../components/Badge';
 import StatusBadge from '../components/StatusBadge';
@@ -19,6 +19,30 @@ const KIND_OPTIONS = [
   { value: 'ACCESSIBLE', label: 'Accessible' }
 ];
 
+const PAY_METHODS = ['UPI', 'Card'];
+
+const FALLBACK_TARIFF = {
+  Bike: { firstHour: 15, extraHour: 10 },
+  Car: { firstHour: 40, extraHour: 30 },
+  SUV: { firstHour: 60, extraHour: 45 }
+};
+
+function computeBookingFee(vehicle, holdMinutes) {
+  const rate =
+    vehicle && vehicle.firstHour != null
+      ? { firstHour: Number(vehicle.firstHour), extraHour: Number(vehicle.extraHour) }
+      : FALLBACK_TARIFF[vehicle?.type] || FALLBACK_TARIFF.Car;
+  const hours = Math.max(1, Math.ceil(Number(holdMinutes) / 60));
+  return rate.firstHour + (hours - 1) * rate.extraHour;
+}
+
+function durationLabel(val) {
+  if (val === '30') return '30 mins';
+  if (val === '60') return '1 hour';
+  if (val === '120') return '2 hours';
+  return `${val} mins`;
+}
+
 export default function BookSlot() {
   const [vehicles, setVehicles] = useState([]);
   const [reservations, setReservations] = useState([]);
@@ -34,10 +58,20 @@ export default function BookSlot() {
   const [specificSlot, setSpecificSlot] = useState('');
   const [showBayPicker, setShowBayPicker] = useState(false);
 
+  // Payment modal & receipt state
+  const [payModalOpen, setPayModalOpen] = useState(false);
+  const [method, setMethod] = useState('UPI');
+  const [simulateFail, setSimulateFail] = useState(false);
   const [booking, setBooking] = useState(false);
+  const [payErr, setPayErr] = useState('');
+  const [bookingReceipt, setBookingReceipt] = useState(null);
+
   const [bookErr, setBookErr] = useState('');
   const [successNotice, setSuccessNotice] = useState('');
   const [cancellingId, setCancellingId] = useState(null);
+
+  const modalRef = useRef(null);
+  const proceedBtnRef = useRef(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -53,7 +87,6 @@ export default function BookSlot() {
       setAvailableSlots(slotsRes);
 
       if (vehsRes.length > 0 && !selectedPlate) {
-        // Pick first vehicle not already in lot or booked
         const availableVeh =
           vehsRes.find(
             (v) =>
@@ -75,7 +108,52 @@ export default function BookSlot() {
     return () => clearInterval(timer);
   }, [loadData]);
 
+  // Modal focus trap & Esc key
+  useEffect(() => {
+    if (!payModalOpen) return;
+
+    const dialogEl = modalRef.current;
+    const focusables = dialogEl
+      ? dialogEl.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      : [];
+    if (focusables.length > 0) {
+      focusables[0].focus();
+    }
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && !booking) {
+        e.preventDefault();
+        setPayModalOpen(false);
+        proceedBtnRef.current?.focus();
+        return;
+      }
+      if (e.key === 'Tab' && dialogEl) {
+        const items = Array.from(
+          dialogEl.querySelectorAll(
+            'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (items.length === 0) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [payModalOpen, booking]);
+
   const selectedVehicle = vehicles.find((v) => v.plate === selectedPlate);
+  const bookingFee = computeBookingFee(selectedVehicle, duration);
 
   const floorsList = [
     { value: 'Any', label: 'Any floor' },
@@ -90,12 +168,26 @@ export default function BookSlot() {
     return true;
   });
 
-  const handleBook = async (e) => {
+  const handleOpenPayModal = (e) => {
     e.preventDefault();
+    if (!selectedPlate) return;
+    setBookErr('');
+    setPayErr('');
+    setSimulateFail(false);
+    setPayModalOpen(true);
+  };
+
+  const handleClosePayModal = () => {
+    if (booking) return;
+    setPayModalOpen(false);
+    proceedBtnRef.current?.focus();
+  };
+
+  const handleConfirmAndPay = async () => {
     if (booking || !selectedPlate) return;
 
     setBooking(true);
-    setBookErr('');
+    setPayErr('');
     setSuccessNotice('');
 
     try {
@@ -104,17 +196,21 @@ export default function BookSlot() {
         floor: prefFloor,
         kind: prefKind,
         slotCode: specificSlot || undefined,
-        holdMinutes: Number(duration)
+        holdMinutes: Number(duration),
+        method: method.toUpperCase(),
+        simulate: simulateFail ? 'fail' : 'success'
       });
 
-      setSuccessNotice(
-        `Slot ${res.slot} on ${res.floor} successfully reserved for ${res.plate}!`
-      );
+      setBookingReceipt({
+        ...res,
+        displayMethod: method
+      });
+      setPayModalOpen(false);
       setSpecificSlot('');
       setShowBayPicker(false);
       await loadData();
     } catch (err) {
-      setBookErr(err.message || 'Could not complete advance booking.');
+      setPayErr(err.message || 'Payment failed. Please try again.');
     } finally {
       setBooking(false);
     }
@@ -137,6 +233,10 @@ export default function BookSlot() {
   };
 
   const activeReservations = reservations.filter((r) => r.minutesRemaining > 0);
+  const selectedIsBlocked =
+    !selectedVehicle ||
+    selectedVehicle.inLot ||
+    activeReservations.some((r) => r.plate === selectedVehicle.plate);
 
   if (loading) {
     return (
@@ -195,6 +295,65 @@ export default function BookSlot() {
           </div>
         )}
 
+        {/* BOOKING PAYMENT RECEIPT */}
+        {bookingReceipt && (
+          <section className="card stack-lg" aria-label="Booking payment receipt">
+            <div className="receipt stack">
+              <div className="row between">
+                <div className="t">Payment received</div>
+                <Badge tone="teal">Slot {bookingReceipt.slot} reserved</Badge>
+              </div>
+              <div className="big">
+                {formatCurrency(bookingReceipt.amount)} via {bookingReceipt.displayMethod}
+              </div>
+              <dl className="kv" style={{ marginTop: '8px' }}>
+                <div>
+                  <dt>Payment ref</dt>
+                  <dd className="mono">{bookingReceipt.txnRef}</dd>
+                </div>
+                <div>
+                  <dt>Booking ref</dt>
+                  <dd className="mono">#{bookingReceipt.ticketNo}</dd>
+                </div>
+                <div>
+                  <dt>Vehicle</dt>
+                  <dd className="mono">{bookingReceipt.plate}</dd>
+                </div>
+                <div>
+                  <dt>Reserved bay</dt>
+                  <dd>
+                    {bookingReceipt.slot} ({bookingReceipt.floor})
+                  </dd>
+                </div>
+                <div>
+                  <dt>Hold expires at</dt>
+                  <dd>{formatTime24(bookingReceipt.expiresAt)} today</dd>
+                </div>
+              </dl>
+              <p style={{ margin: '8px 0 0', fontSize: '14px' }}>
+                Your bay is guaranteed and held until {formatTime24(bookingReceipt.expiresAt)}.
+              </p>
+            </div>
+
+            <div className="row no-print">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => window.print()}
+              >
+                Download receipt
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setBookingReceipt(null)}
+              >
+                Done
+              </button>
+            </div>
+          </section>
+        )}
+
         {/* ACTIVE ADVANCE BOOKINGS */}
         {activeReservations.length > 0 && (
           <section className="stack" aria-label="Active reservations">
@@ -224,8 +383,10 @@ export default function BookSlot() {
                     <span className="mono">#{r.ticketNo}</span>
                   </div>
                   <div>
-                    <small>Reserved at</small>
-                    <span>{formatTime24(r.createdAt)}</span>
+                    <small>Paid</small>
+                    <span>
+                      {formatCurrency(r.amount)} {r.txnRef ? `· ${r.txnRef}` : ''}
+                    </span>
                   </div>
                 </div>
 
@@ -270,7 +431,7 @@ export default function BookSlot() {
             <div>
               <h2 style={{ fontSize: '20px' }}>Request a new advance booking</h2>
               <p className="hint">
-                Select your vehicle and preferences. The bay is held exclusively for you.
+                Select your vehicle and preferences. Payment confirms and holds the bay for you.
               </p>
             </div>
           </div>
@@ -285,7 +446,7 @@ export default function BookSlot() {
               </div>
             </div>
           ) : (
-            <form className="stack-lg" onSubmit={handleBook}>
+            <form className="stack-lg" onSubmit={handleOpenPayModal}>
               {/* Vehicle Picker */}
               <div className="field">
                 <span className="lbl">Select vehicle</span>
@@ -325,9 +486,7 @@ export default function BookSlot() {
                           <span className="mono" style={{ fontWeight: 700 }}>
                             {v.plate}
                           </span>
-                          <small>
-                            {v.type} · {v.plan}
-                          </small>
+                          <small>{v.type}</small>
                         </div>
                         <div className="r">
                           {v.inLot ? (
@@ -343,40 +502,6 @@ export default function BookSlot() {
                   })}
                 </div>
               </div>
-
-              {/* Plan info callout */}
-              {selectedVehicle && (
-                <div
-                  className="card"
-                  style={{
-                    background:
-                      selectedVehicle.rawPlan === 'MONTHLY'
-                        ? 'var(--teal-t)'
-                        : 'var(--bg)',
-                    border: '1px solid var(--line)',
-                    padding: '14px 16px'
-                  }}
-                >
-                  <div className="row between">
-                    <div>
-                      <strong style={{ fontSize: '14px' }}>
-                        Subscription Plan: {selectedVehicle.plan}
-                      </strong>
-                      <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--muted)' }}>
-                        {selectedVehicle.rawPlan === 'MONTHLY'
-                          ? 'Unlimited parking included at ₹0 hourly fee with your Monthly pass.'
-                          : 'Standard hourly tariff applies upon gate exit.'}
-                      </p>
-                    </div>
-                    <Link
-                      to="/my-vehicles"
-                      style={{ fontSize: '13px', color: 'var(--teal-d)', fontWeight: 600 }}
-                    >
-                      Change plan →
-                    </Link>
-                  </div>
-                </div>
-              )}
 
               {/* Floor Preference */}
               <div className="field">
@@ -416,7 +541,7 @@ export default function BookSlot() {
                   onChange={setDuration}
                 />
                 <span className="hint">
-                  The slot will be kept reserved for this duration from now.
+                  The slot will be kept reserved for this duration from confirmation.
                 </span>
               </div>
 
@@ -455,7 +580,7 @@ export default function BookSlot() {
                     </div>
                     {filteredSlots.length === 0 ? (
                       <p className="muted" style={{ fontSize: '13px' }}>
-                        No free bays matching this floor/kind combination right now. You can still select "Any floor" or "Auto-allocate".
+                        No free bays matching this floor/kind combination right now. You can still select &quot;Any floor&quot; or &quot;Auto-allocate&quot;.
                       </p>
                     ) : (
                       <div className="slot-grid" style={{ maxHeight: '180px', overflowY: 'auto' }}>
@@ -465,7 +590,7 @@ export default function BookSlot() {
                             <button
                               key={s.id}
                               type="button"
-                              className={`slot free`}
+                              className="slot free"
                               style={{
                                 border: isPicked
                                   ? '3px solid var(--navy)'
@@ -491,6 +616,13 @@ export default function BookSlot() {
                 )}
               </div>
 
+              <div className="total-row">
+                <span style={{ fontWeight: 600, fontSize: '14px' }}>
+                  Advance booking fee ({selectedVehicle?.type || 'Vehicle'} · {durationLabel(duration)})
+                </span>
+                <dd style={{ margin: 0 }}>{formatCurrency(bookingFee)}</dd>
+              </div>
+
               {bookErr && (
                 <div className="err" role="alert">
                   {bookErr}
@@ -498,11 +630,12 @@ export default function BookSlot() {
               )}
 
               <button
+                ref={proceedBtnRef}
                 type="submit"
                 className="btn btn-primary btn-lg btn-block"
-                disabled={booking || !selectedPlate}
+                disabled={booking || selectedIsBlocked}
               >
-                {booking ? 'Reserving slot…' : `Confirm Advance Booking for ${selectedPlate}`}
+                {`Proceed to payment (${formatCurrency(bookingFee)})`}
               </button>
             </form>
           )}
@@ -513,7 +646,7 @@ export default function BookSlot() {
           <section className="card stack" aria-label="Reservation history">
             <h2 style={{ fontSize: '18px' }}>Your reservation history</h2>
             <div className="table-wrap">
-              <table style={{ minWidth: '480px' }}>
+              <table style={{ minWidth: '540px' }}>
                 <thead>
                   <tr>
                     <th scope="col">Booking</th>
@@ -521,6 +654,9 @@ export default function BookSlot() {
                     <th scope="col">Slot</th>
                     <th scope="col">Floor</th>
                     <th scope="col">Reserved At</th>
+                    <th scope="col" className="num">
+                      Paid
+                    </th>
                     <th scope="col">Status</th>
                   </tr>
                 </thead>
@@ -534,11 +670,14 @@ export default function BookSlot() {
                         <td style={{ fontWeight: 600 }}>{r.slot}</td>
                         <td>{r.floor}</td>
                         <td className="muted">{formatTime24(r.createdAt)}</td>
+                        <td className="num">
+                          <b>{formatCurrency(r.amount)}</b>
+                        </td>
                         <td>
                           {isActive ? (
                             <StatusBadge status="Reserved" tone="amber" />
                           ) : (
-                            <StatusBadge status="Completed / Expired" tone="muted" />
+                            <StatusBadge status="Completed / Expired" tone="navy" />
                           )}
                         </td>
                       </tr>
@@ -550,7 +689,121 @@ export default function BookSlot() {
           </section>
         )}
       </div>
+
+      {/* ADVANCE BOOKING PAYMENT MODAL */}
+      {payModalOpen && selectedVehicle && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleClosePayModal();
+          }}
+        >
+          <div
+            ref={modalRef}
+            className="modal-sheet stack-lg"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="book-pay-title"
+          >
+            <div className="row between" style={{ flexWrap: 'nowrap' }}>
+              <div className="stack" style={{ gap: '4px' }}>
+                <Badge tone="amber">
+                  Demo payment: no real money is charged
+                </Badge>
+                <h2 id="book-pay-title" style={{ fontSize: '20px' }}>
+                  Pay to confirm booking
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="btn"
+                disabled={booking}
+                onClick={handleClosePayModal}
+                aria-label="Close payment sheet"
+              >
+                Close
+              </button>
+            </div>
+
+            <dl className="kv">
+              <div>
+                <dt>Vehicle</dt>
+                <dd className="mono">
+                  {selectedVehicle.plate} ({selectedVehicle.type})
+                </dd>
+              </div>
+              <div>
+                <dt>Preference</dt>
+                <dd>
+                  {specificSlot
+                    ? `Bay ${specificSlot}`
+                    : `${prefFloor === 'Any' ? 'Any floor' : prefFloor} · ${prefKind === 'ANY' ? 'Any bay type' : prefKind}`}
+                </dd>
+              </div>
+              <div>
+                <dt>Hold window</dt>
+                <dd>{durationLabel(duration)}</dd>
+              </div>
+            </dl>
+
+            <div className="total-row">
+              <span style={{ fontWeight: 600, fontSize: '14px' }}>
+                Amount due
+              </span>
+              <dd style={{ margin: 0 }}>{formatCurrency(bookingFee)}</dd>
+            </div>
+
+            <div className="field">
+              <span className="lbl" id="lbl-book-method">
+                Payment method
+              </span>
+              <Segmented
+                id="book-methods"
+                ariaLabelledby="lbl-book-method"
+                options={PAY_METHODS}
+                value={method}
+                onChange={setMethod}
+              />
+            </div>
+
+            <label className="check-row" htmlFor="book-sim-fail">
+              <input
+                id="book-sim-fail"
+                type="checkbox"
+                checked={simulateFail}
+                disabled={booking}
+                onChange={(e) => {
+                  setSimulateFail(e.target.checked);
+                  setPayErr('');
+                }}
+              />
+              <span>Simulate a failed payment (demo)</span>
+            </label>
+
+            {payErr && (
+              <div className="err" role="alert">
+                {payErr}
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="btn btn-primary btn-lg btn-block"
+              disabled={booking}
+              onClick={handleConfirmAndPay}
+            >
+              {booking ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Processing payment…
+                </>
+              ) : (
+                `Pay ${formatCurrency(bookingFee)} & confirm booking`
+              )}
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
-
